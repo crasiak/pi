@@ -98,6 +98,8 @@ Use each event’s declared result type rather than assuming every return value 
 
 Events cover resource discovery, sessions, agent and message lifecycle, providers, tools, and raw input.
 
+The native runner advertises `ctx.inputProvenance === "pipeline-v1"` and supplies `InputEvent.provenance` as a frozen view for one input pipeline invocation. Its `source` is the original source; `transformed` remains true after any transform, including a same-content transform or a later revert; `handled` records a short-circuit; `failed` records a caught handler error; and `settled` becomes true only when the whole pipeline completes or short-circuits. Earlier and later handlers share that invocation view, while separate inputs do not. The view contains no input text or images. Require the per-event view as well as the context marker when final pipeline provenance matters; the marker alone proves nothing about one input.
+
 `before_agent_start` exposes both the current prompt and its structured `systemPromptOptions`. Prefer changing prompt sections, selected tools, or guidelines so Pi can append a transcript delta. Returning `systemPrompt`, or setting `forceSystemPrompt`, replaces the whole prompt for that run while the transcript continues recording the structured sections. Providers receive the forced text as their leading system prompt.
 
 `message_end` can replace a finalized message while preserving its role. `tool_call` can mutate input or block execution. `tool_result` handlers compose, with each handler seeing prior changes.

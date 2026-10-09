@@ -3105,6 +3105,10 @@ export class AgentSession {
 					}
 					void this.abort();
 				},
+				// Deliberately bypasses the mode abort handler, which may clear queues for editor recovery.
+				abortPreservingQueue: () => {
+					void this.abort();
+				},
 				hasPendingMessages: () => this.pendingMessageCount > 0,
 				shutdown: () => {
 					this._extensionShutdownHandler?.();

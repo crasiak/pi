@@ -102,6 +102,7 @@ export type {
 	InlineExtension,
 	// Events - Input
 	InputEvent,
+	InputEventProvenance,
 	InputEventResult,
 	InputSource,
 	KeybindingsManager,
@@ -186,6 +187,7 @@ export type {
 	TurnStartEvent,
 	UIPromptEndEvent,
 	UIPromptKind,
+	UIPromptOwner,
 	UIPromptStartEvent,
 	// Events - User Bash
 	UserBashEvent,

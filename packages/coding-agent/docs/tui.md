@@ -73,6 +73,16 @@ Treat each custom component instance as belonging to one interaction. Create a n
 
 Finish the interaction with the completion callback supplied to the component factory. It resolves the `ctx.ui.custom()` promise and disposes the component. Do not call `OverlayHandle.hide()` on an overlay created by `ctx.ui.custom()`.
 
+`ctx.ui.targetedDialogCancellation` is an optional granular capability. The classic native TUI advertises `input`, `select`, and `custom-overlay`: aborting a built-in dialog signal or completing a custom overlay removes only that interaction, even when a newer dialog owns focus. RPC/print do not advertise it; absence is not a guarantee. `custom-inline` is intentionally unadvertised because its editor draft/focus restoration has not been qualified for overlapping cancellation.
+
+### Correlate prompt lifecycle events
+
+The native extension runner advertises `ctx.ui.uiPromptOwnership === "exclusive-v1"` independently of `targetedDialogCancellation`. It accepts optional `owner: { namespace, id }` in `select`, `confirm`, `input`, and `custom` options. Each string must be nonempty and at most 256 UTF-16 code units. Values are copied into a frozen snapshot; absent or malformed metadata is ignored and never prevents ordinary UI. Ownership is opaque correlation, **not authorization**. Generate tokens inside the extension, not from model tool arguments.
+
+`ui_prompt_start` and `ui_prompt_end` still report only the outer aggregate interval and its initial kind/title, not each nested prompt. Start may carry the initial valid owner. End carries an owner only if **every** nested/overlapping prompt had that exact namespace and ID. Any different, absent, or invalid owner permanently clears attribution until depth reaches zero, even when that prompt finishes first. `editor()` has no owner option and participates as unowned UI. Completion, cancellation, or failure closes the interval normally; the next interval starts fresh. Rebinding UI does not erase still-pending prompts from aggregation; shutdown owners must settle their UI before runtime teardown.
+
+A start owner cannot prove end ownership. An unowned/mixed end remains a generic intervention; do not ignore it because a cancellation request is outstanding or later succeeds. Even an exclusively owned end proves neither human answer nor accepted deferral: a controller must separately correlate its live authority, exact interaction, and cleanup reply. No lifecycle event is suppressed. RPC/print/JSON and an unbound runner do not advertise attribution; attribution alone does not qualify cancellation or remote dismissal.
+
 See [`overlay-qa-tests.ts`](../examples/extensions/overlay-qa-tests.ts) for positioning, stacking, focus, responsive visibility, and animation behavior.
 
 ## Apply themes correctly
