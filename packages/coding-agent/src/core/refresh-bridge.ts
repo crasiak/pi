@@ -249,7 +249,7 @@ export function managedRefreshEndpoint(env: NodeJS.ProcessEnv = process.env):
 		!instance_id ||
 		!/^[0-9a-f]{16}$/.test(instance_id) ||
 		!profile ||
-		!["work", "personal", "work-claude"].includes(profile) ||
+		!/^[a-zA-Z0-9_-]{1,128}$/.test(profile) ||
 		!aoe_profile ||
 		!/^[a-zA-Z0-9_.-]{1,128}$/.test(aoe_profile) ||
 		!lock_hash ||

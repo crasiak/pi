@@ -164,6 +164,18 @@ describe("refresh socket", () => {
 		await expect(startRefreshBridge({ ...options, path: join(link, "other.sock") })).rejects.toThrow("Unsafe");
 	});
 
+	it("supports managed custom Ledger profiles without conflating their AoE names", () => {
+		const endpoint = managedRefreshEndpoint({
+			LEDGER_RUN_ID: `run_${"a".repeat(32)}`,
+			AOE_INSTANCE_ID: "b".repeat(16),
+			LEDGER_PROFILE: "fixture-ledger",
+			AOE_PROFILE: "fixture-aoe",
+			LEDGER_LOCK_HASH: "c".repeat(64),
+		});
+		expect(endpoint?.identity.profile).toBe("fixture-ledger");
+		expect(endpoint?.identity.aoe_profile).toBe("fixture-aoe");
+	});
+
 	it("does not enable for arbitrary SDK environments or partial managed metadata", () => {
 		expect(managedRefreshEndpoint({})).toBeUndefined();
 		expect(
