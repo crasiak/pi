@@ -1,6 +1,7 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import { Container } from "@earendil-works/pi-tui";
 import { describe, expect, test, vi } from "vitest";
+import { SafeStopGate } from "../src/core/safe-stop.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -136,6 +137,7 @@ describe("InteractiveMode compaction events", () => {
 			usage,
 		};
 		const fakeThis = {
+			refreshWork: new SafeStopGate(),
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
 			programStatus: { handleEvent: vi.fn() },
@@ -200,6 +202,7 @@ describe("InteractiveMode compaction events", () => {
 
 	test("updates the working state when the same agent run resumes after compaction", async () => {
 		const fakeThis = {
+			refreshWork: new SafeStopGate(),
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
 			programStatus: { handleEvent: vi.fn() },
@@ -250,6 +253,7 @@ describe("InteractiveMode compaction events", () => {
 
 	test("preserves steering behavior when flushing into an active agent run", async () => {
 		const fakeThis = {
+			refreshWork: new SafeStopGate(),
 			compactionQueuedMessages: [{ text: "change direction", mode: "steer" as const }],
 			session: {
 				clearQueue: vi.fn(),

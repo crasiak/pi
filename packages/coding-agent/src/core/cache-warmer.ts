@@ -161,6 +161,12 @@ interface ActiveRun extends CacheWarmRequest {
  */
 export class CacheWarmer {
 	private run?: ActiveRun;
+	private pendingRefreshes = 0;
+
+	/** Includes cancelled refreshes until their provider and extension callbacks have unwound. */
+	get hasPendingWork(): boolean {
+		return this.run !== undefined || this.pendingRefreshes > 0;
+	}
 	private inactive: CacheWarmingStatus;
 	private readonly models: Pick<ModelRuntime, "streamSimple">;
 	private readonly sessionManager: Pick<SessionManager, "appendUsage" | "getBranch">;
@@ -298,6 +304,15 @@ export class CacheWarmer {
 	}
 
 	private async refresh(run: ActiveRun): Promise<void> {
+		this.pendingRefreshes++;
+		try {
+			await this.refreshRequest(run);
+		} finally {
+			this.pendingRefreshes--;
+		}
+	}
+
+	private async refreshRequest(run: ActiveRun): Promise<void> {
 		run.timer = undefined;
 		if (!this.validateRun(run)) return;
 		if (this.refreshDeadlineMissed(run)) return;

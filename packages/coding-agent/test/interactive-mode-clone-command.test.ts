@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { SafeStopGate } from "../src/core/safe-stop.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type CloneCommandContext = {
+	refreshWork: SafeStopGate;
 	sessionManager: { getLeafId: () => string | null };
 	runtimeHost: {
 		fork: (entryId: string, options?: { position?: "before" | "at" }) => Promise<{ cancelled: boolean }>;
@@ -29,6 +31,7 @@ describe("InteractiveMode /clone", () => {
 		const requestRender = vi.fn();
 
 		const context: CloneCommandContext = {
+			refreshWork: new SafeStopGate(),
 			sessionManager: { getLeafId: () => "leaf-123" },
 			runtimeHost: { fork },
 			renderCurrentSessionState,
@@ -54,6 +57,7 @@ describe("InteractiveMode /clone", () => {
 		const showError = vi.fn();
 
 		const context: CloneCommandContext = {
+			refreshWork: new SafeStopGate(),
 			sessionManager: { getLeafId: () => null },
 			runtimeHost: { fork },
 			renderCurrentSessionState: vi.fn(),
