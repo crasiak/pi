@@ -10,6 +10,7 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
+import { SafeStopGate } from "../../../core/safe-stop.ts";
 import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
@@ -83,6 +84,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		initialSearchInput?: string,
 		onSelectAsDefault?: (model: Model<any>) => void,
 		defaultModel?: DefaultModelReference,
+		work = new SafeStopGate(),
 	) {
 		super();
 
@@ -155,7 +157,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		if (initialSearchInput) this.filterModels(initialSearchInput);
 		else this.updateList();
 		this.tui.requestRender();
-		void this.refreshModels();
+		void work.run(() => this.refreshModels());
 	}
 
 	private loadModelsFromSnapshot(): void {

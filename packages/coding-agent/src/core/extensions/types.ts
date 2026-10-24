@@ -67,6 +67,7 @@ import type { McpServerConfig, McpServerRegistry, RegisteredMcpServer } from "..
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
+import type { SafeStopGate, SafeStopParticipant } from "../safe-stop.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -1590,6 +1591,14 @@ export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContex
  * ExtensionAPI passed to extension factory functions.
  */
 export interface ExtensionAPI {
+	/**
+	 * Declare audited cooperative safe-stop support. No extension is qualified by default.
+	 * All owned background work, including custom providers/tools, must acquire a lease before
+	 * it starts and retain it through cleanup. Idle resources must close in session_shutdown.
+	 * This declaration is not verified and is not a security sandbox.
+	 */
+	registerSafeStop(options: { version: 1 }): SafeStopParticipant;
+
 	// =========================================================================
 	// Event Subscription
 	// =========================================================================
@@ -2152,6 +2161,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  * Contains flag values (defaults set during registration, CLI values set after).
  */
 export interface ExtensionRuntimeState {
+	/** Admission shared by extension APIs, callbacks, and cooperative work leases. */
+	safeStop: SafeStopGate;
 	flagValues: Map<string, boolean | string>;
 	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
@@ -2266,6 +2277,8 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 
 /** Loaded extension with all registered items. */
 export interface Extension {
+	/** Explicit cooperative declaration; absence means unsupported. */
+	safeStopQualified?: boolean;
 	path: string;
 	resolvedPath: string;
 	hidden?: boolean;
