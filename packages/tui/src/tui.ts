@@ -475,6 +475,8 @@ export interface TUI extends Component {
 	getClearOnShrink(): boolean;
 	setClearOnShrink(enabled: boolean): void;
 	setFocus(component: Component | null): void;
+	/** Retire a component's focus references without disturbing unrelated focus or overlay order. */
+	retargetFocus(retired: Component, fallback: Component | null): void;
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;
 	hideOverlay(): void;
 	hasOverlay(): boolean;
@@ -597,6 +599,30 @@ export abstract class TuiBase extends Container implements TUI {
 
 	setFocus(component: Component | null): void {
 		this.setFocusInternal({ component, overlayFocusRestore: "clear" });
+	}
+
+	retargetFocus(retired: Component, fallback: Component | null): void {
+		const owns = (target: Component | null): boolean => target !== null && this.containsComponent(retired, target);
+		// A fallback must be live and cannot be within the component being retired.
+		if (fallback && (owns(fallback) || !this.isComponentMounted(fallback))) return;
+		for (const overlay of this.overlayStack) {
+			if (owns(overlay.preFocus)) overlay.preFocus = fallback;
+		}
+		const restore = this.overlayFocusRestore;
+		if (restore.status === "blocked") {
+			if (restore.resume.status === "focus-target" && owns(restore.resume.target)) {
+				restore.resume = { status: "focus-target", target: fallback };
+			}
+		}
+		// Let the existing transition recognize the removed focus owner and resume its overlay first.
+		// Rewriting blockedBy before setFocus would turn the fallback into a permanent blocker.
+		if (owns(this.focusedComponent)) this.setFocus(fallback);
+		const remaining = this.overlayFocusRestore;
+		if (remaining.status === "blocked" && owns(remaining.blockedBy)) {
+			// Unrelated current focus is unchanged, but stale deferred references must still be retired.
+			if (fallback) remaining.blockedBy = fallback;
+			else this.clearOverlayFocusRestore();
+		}
 	}
 
 	private setFocusInternal({

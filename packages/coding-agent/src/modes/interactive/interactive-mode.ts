@@ -558,6 +558,7 @@ export class InteractiveMode {
 	private installChangeWarningShown = false;
 
 	// Extension UI state
+	private extensionDialogClosers = new Map<Component, () => void>();
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
@@ -2450,6 +2451,7 @@ export class InteractiveMode {
 	}
 
 	private resetExtensionUI(): void {
+		for (const close of this.extensionDialogClosers.values()) close();
 		if (this.extensionSelector) {
 			this.hideExtensionSelector();
 		}
@@ -2632,6 +2634,7 @@ export class InteractiveMode {
 
 	private createExtensionUIContext(): ExtensionUIContext {
 		return {
+			targetedDialogCancellation: Object.freeze(["input", "select", "custom-overlay"] as const),
 			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
 			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
 			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
@@ -2699,27 +2702,24 @@ export class InteractiveMode {
 				return;
 			}
 
-			const onAbort = () => {
-				this.hideExtensionSelector();
-				resolve(undefined);
+			let settled = false;
+			const close = (value?: string) => {
+				if (settled) return;
+				settled = true;
+				opts?.signal?.removeEventListener("abort", onAbort);
+				this.extensionDialogClosers.delete(component);
+				this.hideExtensionSelector(component);
+				resolve(value);
 			};
+			const onAbort = () => close();
+			const component = new ExtensionSelectorComponent(title, options, close, onAbort, {
+				tui: this.ui,
+				timeout: opts?.timeout,
+				onToggleToolsExpanded: () => this.toggleToolOutputExpansion(),
+			});
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			this.extensionSelector = new ExtensionSelectorComponent(
-				title,
-				options,
-				(option) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionSelector();
-					resolve(option);
-				},
-				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionSelector();
-					resolve(undefined);
-				},
-				{ tui: this.ui, timeout: opts?.timeout, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() },
-			);
+			this.extensionDialogClosers.set(component, onAbort);
+			this.extensionSelector = component;
 
 			this.disposeActiveSelector();
 			this.editorContainer.clear();
@@ -2734,13 +2734,27 @@ export class InteractiveMode {
 	/**
 	 * Hide the extension selector.
 	 */
-	private hideExtensionSelector(): void {
-		this.extensionSelector?.dispose();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.extensionSelector = undefined;
-		this.programStatus.setBlocked("extension-dialog", undefined);
-		this.ui.setFocus(this.editor);
+	private hideExtensionSelector(component = this.extensionSelector): void {
+		if (!component) return;
+		const close = this.extensionDialogClosers.get(component);
+		if (close) {
+			close();
+			return;
+		}
+		if (this.extensionSelector === component) this.extensionSelector = undefined;
+		this.retireExtensionDialog(component);
+	}
+
+	/** Remove only this dialog, without replacing a newer editor-slot interaction or its status. */
+	private retireExtensionDialog(component: Component & { dispose(): void }): void {
+		const index = this.editorContainer.children.indexOf(component);
+		if (index !== -1) {
+			this.editorContainer.children.splice(index, 1, this.editor);
+			this.programStatus.setBlocked("extension-dialog", undefined);
+		}
+		const fallback = this.editorContainer.children[0] ?? this.editor;
+		this.ui.retargetFocus(component, fallback);
+		component.dispose();
 		this.ui.requestRender();
 	}
 
@@ -2781,27 +2795,23 @@ export class InteractiveMode {
 				return;
 			}
 
-			const onAbort = () => {
-				this.hideExtensionInput();
-				resolve(undefined);
+			let settled = false;
+			const close = (value?: string) => {
+				if (settled) return;
+				settled = true;
+				opts?.signal?.removeEventListener("abort", onAbort);
+				this.extensionDialogClosers.delete(component);
+				this.hideExtensionInput(component);
+				resolve(value);
 			};
+			const onAbort = () => close();
+			const component = new ExtensionInputComponent(title, placeholder, close, onAbort, {
+				tui: this.ui,
+				timeout: opts?.timeout,
+			});
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			this.extensionInput = new ExtensionInputComponent(
-				title,
-				placeholder,
-				(value) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionInput();
-					resolve(value);
-				},
-				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionInput();
-					resolve(undefined);
-				},
-				{ tui: this.ui, timeout: opts?.timeout },
-			);
+			this.extensionDialogClosers.set(component, onAbort);
+			this.extensionInput = component;
 
 			this.disposeActiveSelector();
 			this.editorContainer.clear();
@@ -2815,14 +2825,15 @@ export class InteractiveMode {
 	/**
 	 * Hide the extension input.
 	 */
-	private hideExtensionInput(): void {
-		this.extensionInput?.dispose();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.extensionInput = undefined;
-		this.programStatus.setBlocked("extension-dialog", undefined);
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
+	private hideExtensionInput(component = this.extensionInput): void {
+		if (!component) return;
+		const close = this.extensionDialogClosers.get(component);
+		if (close) {
+			close();
+			return;
+		}
+		if (this.extensionInput === component) this.extensionInput = undefined;
+		this.retireExtensionDialog(component);
 	}
 
 	/**
@@ -2988,26 +2999,33 @@ export class InteractiveMode {
 		};
 
 		return new Promise((resolve, reject) => {
-			let component: Component & { dispose?(): void };
+			let component: (Component & { dispose?(): void }) | undefined;
+			let handle: OverlayHandle | undefined;
 			let closed = false;
-
-			const close = (result: T) => {
-				if (closed) return;
-				closed = true;
-				if (isOverlay) this.ui.hideOverlay();
-				else restoreEditor();
-				// Note: both branches above already call requestRender
-				resolve(result);
+			const dispose = (c: typeof component) => {
 				try {
-					component?.dispose?.();
+					c?.dispose?.();
 				} catch {
 					/* ignore dispose errors */
 				}
 			};
 
+			const close = (result: T) => {
+				if (closed) return;
+				closed = true;
+				if (isOverlay) handle?.hide();
+				else restoreEditor();
+				// Note: both branches above already call requestRender
+				dispose(component);
+				resolve(result);
+			};
+
 			Promise.resolve(factory(this.ui, theme, this.keybindings, close))
 				.then((c) => {
-					if (closed) return;
+					if (closed) {
+						dispose(c);
+						return;
+					}
 					component = c;
 					if (isOverlay) {
 						// Resolve overlay options - can be static or dynamic function
@@ -3023,7 +3041,7 @@ export class InteractiveMode {
 							const w = (component as { width?: number }).width;
 							return w ? { width: w } : undefined;
 						};
-						const handle = this.ui.showOverlay(component, resolveOptions());
+						handle = this.ui.showOverlay(component, resolveOptions());
 						// Expose handle to caller for visibility control
 						options?.onHandle?.(handle);
 					} else {
@@ -3036,7 +3054,10 @@ export class InteractiveMode {
 				})
 				.catch((err) => {
 					if (closed) return;
-					if (!isOverlay) restoreEditor();
+					closed = true;
+					if (isOverlay) handle?.hide();
+					else restoreEditor();
+					dispose(component);
 					reject(err);
 				});
 		});
@@ -7100,6 +7121,7 @@ export class InteractiveMode {
 	}
 
 	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
+		for (const close of this.extensionDialogClosers.values()) close();
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);

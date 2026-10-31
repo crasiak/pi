@@ -307,6 +307,54 @@ describe("cache warming", () => {
 		failed.warmer.cancel();
 	});
 
+	it("proves quiescence only after pending decisions and invalidated refreshes finish", async () => {
+		vi.useFakeTimers();
+		for (const phase of ["decision", "provider"] as const) {
+			let release!: () => void;
+			let entered!: () => void;
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const started = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			const pending = fakeRuntime({
+				decide: async () => {
+					if (phase === "decision") {
+						entered();
+						await held;
+					}
+					return "warm" as const;
+				},
+				result: async (model) => {
+					entered();
+					await held;
+					return response(model);
+				},
+			});
+			pending.warmer.start(request(), current);
+			vi.clearAllTimers();
+			const internal = pending.warmer as unknown as { run: object; refresh: (run: object) => Promise<void> };
+			const refresh = internal.refresh(internal.run);
+			await started;
+			try {
+				expect(pending.warmer.quiesce()).toBe(false);
+				pending.warmer.cancel();
+				expect(pending.warmer.quiesce()).toBe(false);
+			} finally {
+				release();
+				await refresh;
+			}
+			expect(pending.warmer.quiesce()).toBe(true);
+			pending.warmer.start(request(), current);
+			expect(pending.warmer.status.state).toBe("scheduled");
+			expect(pending.warmer.quiesce()).toBe(true);
+			const calls = pending.calls.length;
+			await vi.advanceTimersByTimeAsync(270_000);
+			expect(pending.calls).toHaveLength(calls);
+		}
+	});
+
 	it("formats status and usage entries", () => {
 		const decision: CacheWarmingDecision = {
 			phase: "idle",

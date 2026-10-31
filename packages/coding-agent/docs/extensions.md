@@ -65,7 +65,7 @@ Automatic retries, recovery, compaction, or queued work can continue afterward.
 <a id="agent_start--agent_end--agent_before_settle--agent_settled"></a>
 
 `agent_before_settle` is the final actionable boundary: it can append entries and request one continuation.
-`agent_settled` is final and notification-only; use it when an integration needs to know Pi will not continue automatically.
+`agent_settled` is notification-only. Its handlers can still submit new work, so observing the event does not prove that all final handlers have finished.
 
 <a id="extensionapi-methods"></a>
 
@@ -101,6 +101,8 @@ Use each event’s declared result type rather than assuming every return value 
 
 Events cover resource discovery, sessions, agent and message lifecycle, providers, tools, and raw input.
 
+The native runner advertises `ctx.inputProvenance === "pipeline-v1"` and supplies `InputEvent.provenance` as a frozen view for one input pipeline invocation. Its `source` is the original source; `transformed` remains true after any transform, including a same-content transform or a later revert; `handled` records a short-circuit; `failed` records a caught handler error; and `settled` becomes true only when the whole pipeline completes or short-circuits. Earlier and later handlers share that invocation view, while separate inputs do not. The view contains no input text or images. Require the per-event view as well as the context marker when final pipeline provenance matters; the marker alone proves nothing about one input.
+
 `before_agent_start` exposes both the current prompt and its structured `systemPromptOptions`. `event.messageType` says what started the run: `"user"` for a prompt or `pi.sendUserMessage()`, with `prompt` and `images`; `"custom"` for `pi.sendMessage(..., { triggerTurn: true })`, with the starting `message` and no `prompt`. A returned `message` is added to either kind of run; check `messageType` to skip runs started by custom messages. Prefer changing prompt sections, selected tools, or guidelines so Pi can append a transcript delta. Returning `systemPrompt`, or setting `forceSystemPrompt`, replaces the whole prompt for that run while the transcript continues recording the structured sections. Providers receive the forced text as their leading system prompt.
 
 `message_end` can replace a finalized message while preserving its role. `tool_call` can mutate input or block execution. `tool_result` handlers compose, with each handler seeing prior changes.
@@ -116,6 +118,12 @@ Handlers are awaited in stream order, so slow handlers delay stream consumption.
 `context` transforms conversation messages without prompt and tool system messages; Pi restores that state afterward. Use `context_with_system` only when a request-local transformation must own the complete transcript, and keep a system message at index zero.
 
 `turn_end` and `agent_before_settle` are actionable boundaries. Their handlers can chain proposed `custom`, `custom_message`, `context_edit`, or `compaction` entries and return `continue: true` for one next model request. Guard continuation conditions because an unconditional continuation can loop. Use the exported event declarations for the complete validation and ordering contract.
+
+When available, `ctx.abortPreservingQueue()` aborts the active operation without the interactive mode's queue-to-editor recovery. It retains the original queued messages and does not resume them. Ordinary `ctx.abort()` keeps its mode-specific recovery behavior.
+
+When available, `ctx.endRunPreservingQueue()` requests a terminal boundary during a completed `turn_end`. It stops further requests, automatic recovery and queue draining for that episode without aborting the successful turn. Later continuation requests cannot override it. Existing queued messages and work submitted by awaited final handlers remain queued for a later explicit run. Calls outside that boundary, from another episode, or with outstanding cache-warming work return `undefined`.
+
+An accepted request returns an `EndRunTicket` with `version: 1`, `completion: Promise<boolean>` and `isCurrent()`. Observe the promise outside lifecycle handlers; awaiting it inside the boundary or final handlers deadlocks finalization. A true result means awaited episode finalization finished without cancellation or handler failure and SDK warming was quiescent, not that the model's task succeeded or usage is complete. Recheck `isCurrent()` after every await before acting on the result. A new episode, runtime replacement or disposal invalidates it. Unawaited future work from independent extensions is outside this proof.
 
 <a id="cache_warming_decision"></a>
 

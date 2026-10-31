@@ -84,6 +84,7 @@ import {
 	type AgentActivityOutcome,
 	type BoundaryContextPreview,
 	type ContextUsage,
+	type EndRunTicket,
 	type ExecuteToolOptions,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
@@ -263,7 +264,8 @@ export interface AgentSessionConfig {
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
 	/** Keeps the prompt cache entry of the last session request warm. */
-	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
+	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed"> &
+		Partial<Pick<CacheWarmer, "quiesce">>;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
 	/**
@@ -386,7 +388,15 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	private _disposed = false;
 	private _agentRunAbortRequested = false;
+	private _preservingAbortEpisode: object | undefined;
+	private _terminalBoundarySignal: AbortSignal | undefined;
+	private _episode = {};
+	private _terminalRun:
+		| { ticket: EndRunTicket; finish: (success: boolean) => void; episode: object; signal: AbortSignal }
+		| undefined;
+	private _agentRunHadFailure = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -466,7 +476,7 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
-	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
+	private _cacheWarmer?: AgentSessionConfig["cacheWarmer"];
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -887,8 +897,15 @@ export class AgentSession {
 		const previousFinishTurn = this.agent.finishTurn;
 		this.agent.finishTurn = async (turn, signal) => {
 			this._boundaryDispatchedMessages.add(turn.message);
-			const extensionContinue = await this._dispatchTurnEndBoundary(turn.message, turn.toolResults);
+			let extensionContinue: boolean;
+			this._terminalBoundarySignal = signal;
+			try {
+				extensionContinue = await this._dispatchTurnEndBoundary(turn.message, turn.toolResults);
+			} finally {
+				this._terminalBoundarySignal = undefined;
+			}
 			const previousDecision = await previousFinishTurn?.(turn, signal);
+			if (this._terminalRun) return { action: "end" };
 			if (previousDecision?.action === "end") return previousDecision;
 			if (extensionContinue || previousDecision?.action === "continue") return { action: "continue" };
 			return undefined;
@@ -1076,15 +1093,18 @@ export class AgentSession {
 	}
 
 	private async _emitAgentSettled(): Promise<void> {
-		this._cacheWarmer?.onAgentSettled();
-		this._isAgentRunActive = false;
+		if (!this._terminalRun) this._cacheWarmer?.onAgentSettled();
+		this._isAgentRunActive = this._terminalRun !== undefined;
 		this._isEmittingAgentSettled = true;
 		try {
 			const aborted = this._agentRunAbortRequested;
 			await this._extensionRunner.emit({ type: "agent_settled", aborted });
 			this._emit({ type: "agent_settled", aborted });
+			this._flushPendingBashMessages();
+			this._flushPendingCustomMessages();
 		} finally {
 			this._isEmittingAgentSettled = false;
+			this._isAgentRunActive = false;
 		}
 
 		const deferred = this._deferredSettledActions.splice(0);
@@ -1101,9 +1121,18 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		if (
+			event.type === "message_end" &&
+			event.message.role === "assistant" &&
+			(event.message.stopReason === "error" || event.message.stopReason === "aborted")
+		) {
+			this._agentRunHadFailure = true;
+		}
 		// An abort requested while the run was starting, e.g. during before_agent_start, stops it
 		// here. agent_start is awaited before the first request.
-		if (event.type === "agent_start" && this._agentRunAbortRequested) this.agent.abort();
+		if (event.type === "agent_start" && this._agentRunAbortRequested) {
+			this.agent.abort({ preserveQueue: this._preservingAbortEpisode === this._episode });
+		}
 		// Record the calls a tool made through ctx.executeTool() and their usage on its result message.
 		if (this._nestedToolCalls) {
 			if (event.type === "message_start" && event.message.role === "toolResult") {
@@ -1199,7 +1228,7 @@ export class AgentSession {
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
-		if (this._agentRunAbortRequested) return false;
+		if (this._agentRunAbortRequested || this._terminalRun) return false;
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled || this._retryAttempt >= settings.maxRetries) {
 			return false;
@@ -1394,6 +1423,9 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._disposed = true;
+		this._terminalRun?.finish(false);
+		this._terminalRun = undefined;
 		try {
 			this.abortRetry();
 			this.abortCompaction();
@@ -1830,50 +1862,96 @@ export class AgentSession {
 	 * @param onStarted Called once the run's messages are prepared, before the first request.
 	 */
 	private async _startRun(trigger: BeforeAgentStartTrigger, onStarted?: () => void): Promise<void> {
+		if (this._disposed) throw new Error("Session is disposed");
+		const episode = {};
+		this._episode = episode;
+		this._preservingAbortEpisode = undefined;
+		this._invalidateTerminalRun();
+		this._agentRunHadFailure = false;
 		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
-		let messages: AgentMessage[];
+		let finished = false;
+		let finalized = false;
+		let handlerFailed = false;
+		const unlisten = this._extensionRunner.onError(() => {
+			handlerFailed = true;
+		});
 		try {
-			messages = await this._prepareRun(trigger);
-		} catch (error) {
-			this._isAgentRunActive = false;
-			this._flushPendingBashMessages();
-			this._flushPendingCustomMessages();
-			this._resolveIdleWaitIfIdle();
-			throw error;
-		}
-		// Messages held while the run was starting go before its starting messages, as they would
-		// have while idle. No run exists yet, so they cannot split a tool call from its result.
-		this._flushPendingBashMessages();
-		this._flushPendingCustomMessages();
-		onStarted?.();
+			let messages: AgentMessage[];
+			try {
+				messages = await this._prepareRun(trigger);
+				// Preparation may have outlived teardown. Never launch or abort another core run from it.
+				if (this._disposed) throw new Error("Session is disposed");
+				if (this._episode !== episode) throw new Error("Session startup was replaced");
+				// Messages held while the run was starting go before its starting messages, as they would
+				// have while idle. No run exists yet, so they cannot split a tool call from its result.
+				this._flushPendingBashMessages();
+				this._flushPendingCustomMessages();
+				onStarted?.();
 
-		// Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
-		this._failedResponse = undefined;
-		this._recordSelection();
-		// The run records the loadout in the transcript; restored tools that did not register by now
-		// are dropped, so a tool that never registers does not stay pending.
-		this._pendingToolNames.clear();
-		try {
-			await this.agent.prompt(messages);
-			while (!this._agentRunAbortRequested) {
-				if (await this._handlePostAgentRun()) {
+				// Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
+				this._failedResponse = undefined;
+				this._recordSelection();
+				// The run records the loadout in the transcript; restored tools that did not register by now
+				// are dropped, so a tool that never registers does not stay pending.
+				this._pendingToolNames.clear();
+				// Synchronous persistence/preflight observers can also tear down this prepared startup.
+				if (this._disposed) throw new Error("Session is disposed");
+				if (this._episode !== episode) throw new Error("Session startup was replaced");
+			} catch (error) {
+				if (this._episode === episode) {
+					this._isAgentRunActive = false;
+					this._flushPendingBashMessages();
+					this._flushPendingCustomMessages();
+					this._resolveIdleWaitIfIdle();
+				}
+				throw error;
+			}
+			try {
+				await this.agent.prompt(messages);
+				while (!this._agentRunAbortRequested && !this._terminalRun) {
+					if (await this._handlePostAgentRun()) {
+						if (this._agentRunAbortRequested) break;
+						await this.agent.continue();
+						continue;
+					}
+					if (this._agentRunAbortRequested || !(await this._runBeforeSettleBoundary())) break;
 					if (this._agentRunAbortRequested) break;
 					await this.agent.continue();
-					continue;
 				}
-				if (this._agentRunAbortRequested || !(await this._runBeforeSettleBoundary())) break;
-				if (this._agentRunAbortRequested) break;
-				await this.agent.continue();
+				finished = true;
+			} finally {
+				if (this._agentRunAbortRequested) this._finishCancelledRetry();
+				this._failedResponse = undefined;
+				this._runSystemPromptOptions = undefined;
+				this._flushPendingBashMessages();
+				this._flushPendingCustomMessages();
+				await this._emitAgentSettled();
+				finalized = true;
 			}
 		} finally {
-			if (this._agentRunAbortRequested) this._finishCancelledRetry();
-			this._failedResponse = undefined;
-			this._runSystemPromptOptions = undefined;
-			this._flushPendingBashMessages();
-			this._flushPendingCustomMessages();
-			await this._emitAgentSettled();
+			unlisten();
+			this._finishTerminalRun(episode, finished && finalized && !handlerFailed);
 		}
+	}
+
+	private _invalidateTerminalRun(): void {
+		this._terminalRun?.finish(false);
+		this._terminalRun = undefined;
+	}
+
+	private _finishTerminalRun(episode: object, succeeded: boolean): void {
+		const terminal = this._terminalRun;
+		if (!terminal || terminal.episode !== episode) return;
+		terminal.finish(
+			succeeded &&
+				!this._agentRunAbortRequested &&
+				!this._agentRunHadFailure &&
+				!terminal.signal.aborted &&
+				this._lastActivityOutcome === "completed" &&
+				terminal.ticket.isCurrent() &&
+				(!this._cacheWarmer || this._cacheWarmer.quiesce?.() === true),
+		);
 	}
 
 	/**
@@ -2051,10 +2129,13 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
-		if (this._isEmittingAgentSettled) {
+		const retainForTerminal = this._isEmittingAgentSettled && this._terminalRun !== undefined;
+		if (this._isEmittingAgentSettled && !retainForTerminal) {
 			this._deferredSettledActions.push(async () => await this.prompt(text, options));
 			return;
 		}
+		if (!this.isStreaming) this._invalidateTerminalRun();
+		const streamingBehavior = options?.streamingBehavior ?? (retainForTerminal ? "followUp" : undefined);
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		// Handle extension commands first (execute immediately, even during streaming)
@@ -2079,7 +2160,7 @@ export class AgentSession {
 			text,
 			options?.images,
 			options?.source ?? "interactive",
-			this.isStreaming ? options?.streamingBehavior : undefined,
+			this.isStreaming ? streamingBehavior : undefined,
 		);
 		if (!processedInput) {
 			preflightResult?.("handled");
@@ -2096,12 +2177,12 @@ export class AgentSession {
 
 		// If streaming, queue via steer() or followUp() based on option
 		if (this.isStreaming) {
-			if (!options?.streamingBehavior) {
+			if (!streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			if (options.streamingBehavior === "followUp") {
+			if (streamingBehavior === "followUp") {
 				await this._queueFollowUp(expandedText, currentImages);
 			} else {
 				await this._queueSteer(expandedText, currentImages);
@@ -2455,16 +2536,18 @@ export class AgentSession {
 
 	/**
 	 * Abort current operation and wait for agent to become idle.
+	 * With preserveQueue, fence further queue selection and requests, including during startup preparation.
 	 */
-	async abort(): Promise<void> {
+	async abort(options?: { preserveQueue?: boolean }): Promise<void> {
 		if (this._isAgentRunActive) {
 			this._agentRunAbortRequested = true;
+			if (options?.preserveQueue) this._preservingAbortEpisode = this._episode;
 		}
 		this.abortRetry();
 		this.abortCompaction();
 		this.abortBranchSummary();
 		if (this._isBeforeSettle) this._abortDuringBeforeSettle = true;
-		this.agent.abort();
+		this.agent.abort(options);
 		await this.waitForIdle();
 	}
 
@@ -2788,6 +2871,7 @@ export class AgentSession {
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();
+		this._invalidateTerminalRun();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 		let fromExtension = false;
@@ -3471,6 +3555,46 @@ export class AgentSession {
 					}
 					void this.abort();
 				},
+				// Deliberately bypasses the mode abort handler, which may clear queues for editor recovery.
+				abortPreservingQueue: () => {
+					void this.abort({ preserveQueue: true });
+				},
+				endRunPreservingQueue: (signal) => {
+					if (
+						!signal ||
+						signal.aborted ||
+						signal !== this._terminalBoundarySignal ||
+						!this._isAgentRunActive ||
+						this._agentRunAbortRequested ||
+						this._lastActivityOutcome !== "completed"
+					)
+						return undefined;
+					if (this._terminalRun) return this._terminalRun.ticket;
+					if (this._cacheWarmer && this._cacheWarmer.quiesce?.() !== true) return undefined;
+					let finish!: (success: boolean) => void;
+					const completion = new Promise<boolean>((resolve) => {
+						finish = resolve;
+					});
+					const sessionId = this.sessionId;
+					const ticket: EndRunTicket = Object.freeze({
+						version: 1,
+						completion,
+						isCurrent: () => {
+							try {
+								runner.getActiveTools();
+								return (
+									this._terminalRun?.ticket === ticket &&
+									this._extensionRunner === runner &&
+									this.sessionId === sessionId
+								);
+							} catch {
+								return false;
+							}
+						},
+					});
+					this._terminalRun = { ticket, finish, episode: this._episode, signal };
+					return ticket;
+				},
 				hasPendingMessages: () => this.pendingMessageCount > 0,
 				shutdown: () => {
 					this._extensionShutdownHandler?.();
@@ -3999,6 +4123,7 @@ export class AgentSession {
 			);
 		}
 
+		this._invalidateTerminalRun();
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target

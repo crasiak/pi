@@ -447,6 +447,7 @@ describe("AgentSession concurrent prompt guard", () => {
 					trigger: unknown,
 					systemPromptOptions: BuildSystemPromptOptions,
 				) => Promise<{ messages: []; systemPromptOptions: NormalizedBuildSystemPromptOptions }>;
+				onError: () => () => void;
 				invalidate: (message?: string) => void;
 			};
 		};
@@ -468,6 +469,7 @@ describe("AgentSession concurrent prompt guard", () => {
 				messages: [],
 				systemPromptOptions: normalizeBuildSystemPromptOptions(systemPromptOptions),
 			}),
+			onError: () => () => {},
 			invalidate: () => {},
 		};
 
@@ -593,6 +595,7 @@ describe("AgentSession concurrent prompt guard", () => {
 					trigger: unknown,
 					systemPromptOptions: BuildSystemPromptOptions,
 				) => Promise<{ messages: []; systemPromptOptions: NormalizedBuildSystemPromptOptions }>;
+				onError: () => () => void;
 				invalidate: (message?: string) => void;
 			};
 		};
@@ -610,6 +613,7 @@ describe("AgentSession concurrent prompt guard", () => {
 				messages: [],
 				systemPromptOptions: normalizeBuildSystemPromptOptions(systemPromptOptions),
 			}),
+			onError: () => () => {},
 			invalidate: () => {},
 		};
 

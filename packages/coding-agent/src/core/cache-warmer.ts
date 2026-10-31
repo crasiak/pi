@@ -161,6 +161,7 @@ interface ActiveRun extends CacheWarmRequest {
  */
 export class CacheWarmer {
 	private run?: ActiveRun;
+	private activeRefreshes = 0;
 	private inactive: CacheWarmingStatus;
 	private readonly models: Pick<ModelRuntime, "streamSimple">;
 	private readonly sessionManager: Pick<SessionManager, "appendUsage" | "getBranch">;
@@ -268,6 +269,13 @@ export class CacheWarmer {
 		this.stop("inactive");
 	}
 
+	/** Remove scheduled warming only when no decision or request callback is outstanding. */
+	quiesce(): boolean {
+		if (this.activeRefreshes > 0) return false;
+		this.stop("episode ended");
+		return true;
+	}
+
 	private clearRun(): void {
 		const run = this.run;
 		if (!run) return;
@@ -298,6 +306,15 @@ export class CacheWarmer {
 	}
 
 	private async refresh(run: ActiveRun): Promise<void> {
+		this.activeRefreshes++;
+		try {
+			await this.refreshActive(run);
+		} finally {
+			this.activeRefreshes--;
+		}
+	}
+
+	private async refreshActive(run: ActiveRun): Promise<void> {
 		run.timer = undefined;
 		if (!this.validateRun(run)) return;
 		if (this.refreshDeadlineMissed(run)) return;

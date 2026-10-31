@@ -177,6 +177,7 @@ type ActiveRun = {
 	promise: Promise<void>;
 	resolve: () => void;
 	abortController: AbortController;
+	preserveQueue: boolean;
 };
 
 /**
@@ -337,9 +338,12 @@ export class Agent {
 		return this.activeRun?.abortController.signal;
 	}
 
-	/** Abort the current run, if one is active. */
-	abort(): void {
-		this.activeRun?.abortController.abort();
+	/** Abort the current run. With preserveQueue, also stop further queue selection and requests for this run only. */
+	abort(options?: { preserveQueue?: boolean }): void {
+		const run = this.activeRun;
+		if (!run) return;
+		if (options?.preserveQueue) run.preserveQueue = true;
+		run.abortController.abort();
 	}
 
 	/**
@@ -465,6 +469,8 @@ export class Agent {
 	}
 
 	private createLoopConfig(options: { skipInitialSteeringPoll?: boolean } = {}): AgentLoopConfig {
+		// Capture this run, not this.activeRun: a fence must never follow the Agent into a later run.
+		const run = this.activeRun;
 		let skipInitialSteeringPoll = options.skipInitialSteeringPoll === true;
 		return {
 			model: this._state.model,
@@ -480,6 +486,7 @@ export class Agent {
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
 			finishTurn: this.finishTurn,
+			shouldStop: () => run?.preserveQueue === true,
 			prepareRequest: this.prepareRequest,
 			prepareNextTurn:
 				this.prepareNextTurnWithContext || this.prepareNextTurn
@@ -494,13 +501,14 @@ export class Agent {
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,
 			getSteeringMessages: async () => {
+				if (run?.preserveQueue) return [];
 				if (skipInitialSteeringPoll) {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
 				return this.steeringQueue.drain();
 			},
-			getFollowUpMessages: async () => this.followUpQueue.drain(),
+			getFollowUpMessages: async () => (run?.preserveQueue ? [] : this.followUpQueue.drain()),
 		};
 	}
 
@@ -514,7 +522,7 @@ export class Agent {
 		const promise = new Promise<void>((resolve) => {
 			resolvePromise = resolve;
 		});
-		this.activeRun = { promise, resolve: resolvePromise, abortController };
+		this.activeRun = { promise, resolve: resolvePromise, abortController, preserveQueue: false };
 
 		this._state.isStreaming = true;
 		this._state.streamingMessage = undefined;

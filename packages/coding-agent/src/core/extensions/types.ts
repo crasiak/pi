@@ -110,8 +110,16 @@ export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 // UI Context
 // ============================================================================
 
+/** Opaque correlation metadata, not authorization. Strings must be nonempty and at most 256 UTF-16 code units. */
+export interface UIPromptOwner {
+	readonly namespace: string;
+	readonly id: string;
+}
+
 /** Options for extension UI dialogs. */
 export interface ExtensionUIDialogOptions {
+	/** Optional lifecycle correlation. Invalid metadata is ignored without preventing UI. */
+	owner?: UIPromptOwner;
 	/** AbortSignal to programmatically dismiss the dialog. */
 	signal?: AbortSignal;
 	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
@@ -147,6 +155,17 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
  * Each mode (interactive, RPC, print) provides its own implementation.
  */
 export interface ExtensionUIContext {
+	/** Runner-provided exclusive aggregate ownership semantics for ui_prompt_start/end.
+	 * Independent of targeted cancellation; absent or mixed ownership is always unattributed.
+	 */
+	readonly uiPromptOwnership?: "exclusive-v1";
+
+	/** Kinds whose cancellation cleans up only the owned dialog, even with overlapping UI.
+	 * Custom dialogs must finish through their factory completion callback, not handle.hide().
+	 * Absence is not a guarantee; RPC/print do not advertise this capability.
+	 */
+	readonly targetedDialogCancellation?: readonly ("input" | "select" | "custom-overlay" | "custom-inline")[];
+
 	/** Show a selector and return the user's choice. */
 	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
 
@@ -219,6 +238,8 @@ export interface ExtensionUIContext {
 			done: (result: T) => void,
 		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
 		options?: {
+			/** Optional lifecycle correlation, with the same validation as dialog owner metadata. */
+			owner?: UIPromptOwner;
 			overlay?: boolean;
 			/** Overlay positioning/sizing options. Can be static or a function for dynamic updates. */
 			overlayOptions?: OverlayOptions | (() => OverlayOptions);
@@ -322,9 +343,19 @@ export interface CompactOptions {
  */
 export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
+export interface EndRunTicket {
+	readonly version: 1;
+	/** True only after successful awaited episode finalization. Never await inside its lifecycle handlers. */
+	readonly completion: Promise<boolean>;
+	/** False after another episode, runtime replacement or disposal. Check again after any await. */
+	isCurrent(): boolean;
+}
+
 export interface ExtensionContext {
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
+	/** Runner-provided input pipeline provenance semantics. */
+	readonly inputProvenance?: "pipeline-v1";
 	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
 	mode: ExtensionMode;
 	/** Whether dialog-capable UI is available (true in TUI and RPC modes) */
@@ -350,8 +381,19 @@ export interface ExtensionContext {
 	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
-	/** Abort the current agent operation */
+	/** Abort the current agent operation using the mode's ordinary recovery behavior. */
 	abort(): void;
+	/**
+	 * Abort the current agent operation while retaining the original queued messages.
+	 * Presence explicitly advertises this capability. The operation does not resume queued work.
+	 */
+	abortPreservingQueue?(): void;
+	/**
+	 * End this episode at a completed turn_end without aborting or draining queued work.
+	 * Later continuation requests cannot override it. Returns undefined outside that boundary
+	 * or while cache warming is outstanding. Presence advertises terminal-ticket v1 semantics.
+	 */
+	endRunPreservingQueue?(): EndRunTicket | undefined;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown pi and exit. Available in all contexts. */
@@ -1040,6 +1082,8 @@ export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
 
 /** Fired when Pi starts waiting on a blocking user-facing extension UI prompt. */
 export interface UIPromptStartEvent {
+	/** Initial prompt owner only; a later overlapping prompt can clear end attribution. */
+	owner?: UIPromptOwner;
 	type: "ui_prompt_start";
 	reason: "ui_prompt";
 	kind: UIPromptKind;
@@ -1048,6 +1092,8 @@ export interface UIPromptStartEvent {
 
 /** Fired when Pi is no longer waiting on a blocking user-facing extension UI prompt. */
 export interface UIPromptEndEvent {
+	/** Present only if every prompt in the aggregate interval had the same valid owner. */
+	owner?: UIPromptOwner;
 	type: "ui_prompt_end";
 	reason: "ui_prompt";
 	kind: UIPromptKind;
@@ -1167,15 +1213,31 @@ export interface UserBashEvent {
 /** Source of user input */
 export type InputSource = "interactive" | "rpc" | "extension";
 
+/** Read-only state for one input pipeline invocation. */
+export interface InputEventProvenance {
+	/** Original source for the invocation. */
+	readonly source: InputSource;
+	/** True after the pipeline completes or short-circuits. */
+	readonly settled: boolean;
+	/** True if any handler returned a transform, even if later reverted. */
+	readonly transformed: boolean;
+	/** True if a handler short-circuited the pipeline. */
+	readonly handled: boolean;
+	/** True if any handler error was caught. */
+	readonly failed: boolean;
+}
+
 /** Fired when user input is received, before agent processing */
 export interface InputEvent {
 	type: "input";
-	/** The input text */
+	/** The input text at this point in the transform pipeline. */
 	text: string;
-	/** Attached images, if any */
+	/** Attached images at this point in the transform pipeline, if any. */
 	images?: ImageContent[];
 	/** Where the input came from */
 	source: InputSource;
+	/** Read-only state for this complete pipeline invocation, when supported by the runner. */
+	readonly provenance?: InputEventProvenance;
 	/** How the input will be delivered during streaming, or undefined when idle */
 	streamingBehavior?: "steer" | "followUp";
 }
@@ -2215,6 +2277,9 @@ export interface ExtensionContextActions {
 	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
+	/** Optional so non-session consumers are not required to provide this capability. */
+	abortPreservingQueue?: () => void;
+	endRunPreservingQueue?: (signal: AbortSignal | undefined) => EndRunTicket | undefined;
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;

@@ -59,6 +59,7 @@ import type {
 	ExtensionToolContext,
 	ExtensionUIContext,
 	InputEvent,
+	InputEventProvenance,
 	InputEventResult,
 	InputSource,
 	LoadExtensionsResult,
@@ -89,6 +90,7 @@ import type {
 	ToolResultEventResult,
 	TurnEndEvent,
 	UIPromptKind,
+	UIPromptOwner,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
@@ -169,6 +171,21 @@ function isUserBashEventResult(value: unknown): value is UserBashEventResult {
 export type BeforeAgentStartTrigger =
 	| Pick<BeforeAgentStartUserEvent, "messageType" | "prompt" | "images">
 	| Pick<BeforeAgentStartCustomEvent, "messageType" | "message">;
+
+/** Snapshot optional metadata before opening UI. Bad metadata must never prevent a prompt. */
+function copyUIPromptOwner(options: unknown): UIPromptOwner | undefined {
+	try {
+		if (!options || typeof options !== "object") return undefined;
+		const owner: unknown = (options as Record<string, unknown>).owner;
+		if (!owner || typeof owner !== "object" || Array.isArray(owner)) return undefined;
+		const { namespace, id } = owner as Record<string, unknown>;
+		if (typeof namespace !== "string" || namespace.length === 0 || namespace.length > 256) return undefined;
+		if (typeof id !== "string" || id.length === 0 || id.length > 256) return undefined;
+		return Object.freeze({ namespace, id });
+	} catch {
+		return undefined;
+	}
+}
 
 /** Combined result from all before_agent_start handlers. */
 interface BeforeAgentStartCombinedResult {
@@ -377,6 +394,8 @@ export class ExtensionRunner {
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
+	private abortPreservingQueueFn: (() => void) | undefined;
+	private endRunPreservingQueueFn: ExtensionContextActions["endRunPreservingQueue"];
 	private hasPendingMessagesFn: () => boolean = () => false;
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
@@ -397,7 +416,7 @@ export class ExtensionRunner {
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 	private uiPromptDepth = 0;
-	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
+	private activeUIPrompt: { kind: UIPromptKind; title?: string; owner?: UIPromptOwner } | undefined;
 
 	constructor(
 		extensions: Extension[],
@@ -450,6 +469,8 @@ export class ExtensionRunner {
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
 		this.getSignalFn = contextActions.getSignal;
 		this.abortFn = contextActions.abort;
+		this.abortPreservingQueueFn = contextActions.abortPreservingQueue;
+		this.endRunPreservingQueueFn = contextActions.endRunPreservingQueue;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
@@ -570,45 +591,82 @@ export class ExtensionRunner {
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
-		this.uiContext = uiContext ? this.wrapUIPromptContext(uiContext) : noOpUIContext;
+		this.uiContext = uiContext ? this.wrapUIPromptContext(uiContext, mode) : noOpUIContext;
 		this.mode = mode;
 	}
 
-	private wrapUIPromptContext(ui: ExtensionUIContext): ExtensionUIContext {
+	private wrapUIPromptContext(ui: ExtensionUIContext, mode: ExtensionMode): ExtensionUIContext {
 		return {
 			...ui,
-			select: (title, options, opts) => this.withUIPrompt("select", title, () => ui.select(title, options, opts)),
-			confirm: (title, message, opts) => this.withUIPrompt("confirm", title, () => ui.confirm(title, message, opts)),
+			// Advertise from the wrapper that implements it, never from a cancellation marker or version.
+			uiPromptOwnership: mode === "tui" ? "exclusive-v1" : undefined,
+			select: (title, options, opts) =>
+				this.withUIPrompt("select", title, opts, () => ui.select(title, options, opts)),
+			confirm: (title, message, opts) =>
+				this.withUIPrompt("confirm", title, opts, () => ui.confirm(title, message, opts)),
 			input: (title, placeholder, opts) =>
-				this.withUIPrompt("input", title, () => ui.input(title, placeholder, opts)),
-			editor: (title, prefill) => this.withUIPrompt("editor", title, () => ui.editor(title, prefill)),
-			custom: (factory, options) => this.withUIPrompt("custom", undefined, () => ui.custom(factory, options)),
+				this.withUIPrompt("input", title, opts, () => ui.input(title, placeholder, opts)),
+			editor: (title, prefill) => this.withUIPrompt("editor", title, undefined, () => ui.editor(title, prefill)),
+			custom: (factory, options) =>
+				this.withUIPrompt("custom", undefined, options, () => ui.custom(factory, options)),
 		};
 	}
 
-	private withUIPrompt<T>(kind: UIPromptKind, title: string | undefined, run: () => Promise<T>): Promise<T> {
+	private withUIPrompt<T>(
+		kind: UIPromptKind,
+		title: string | undefined,
+		options: unknown,
+		run: () => Promise<T>,
+	): Promise<T> {
+		const owner = copyUIPromptOwner(options);
 		const outerPrompt = this.uiPromptDepth++ === 0;
 		if (outerPrompt) {
-			this.activeUIPrompt = { kind, title };
-			this.emitUIPromptEvent({ type: "ui_prompt_start", reason: "ui_prompt", kind, ...(title ? { title } : {}) });
+			this.activeUIPrompt = { kind, title, owner };
+			this.emitUIPromptEvent({
+				type: "ui_prompt_start",
+				reason: "ui_prompt",
+				kind,
+				...(title ? { title } : {}),
+				...(owner ? { owner } : {}),
+			});
+		} else if (
+			this.activeUIPrompt &&
+			(!owner ||
+				owner.namespace !== this.activeUIPrompt.owner?.namespace ||
+				owner.id !== this.activeUIPrompt.owner?.id)
+		) {
+			// Once mixed, attribution stays cleared until depth returns to zero, regardless of finish order.
+			this.activeUIPrompt.owner = undefined;
 		}
 
+		let synchronous = true;
 		const finish = () => {
 			if (--this.uiPromptDepth > 0) return;
 			this.uiPromptDepth = 0;
 
 			const prompt = this.activeUIPrompt ?? { kind, title };
 			this.activeUIPrompt = undefined;
-			this.emitUIPromptEvent({
+			// Publish during the observer reaction. Already-queued consumers of the native
+			// promise still run before work requested by an end listener, without delaying the result.
+			const event = {
 				type: "ui_prompt_end",
 				reason: "ui_prompt",
 				kind: prompt.kind,
 				...(prompt.title ? { title: prompt.title } : {}),
-			});
+				...(prompt.owner ? { owner: prompt.owner } : {}),
+			} as const;
+			// A synchronous backend throw must not overtake the already-queued start event.
+			if (synchronous) this.emitUIPromptEvent(event);
+			else void this.emit(event);
 		};
 
 		try {
-			return run().finally(finish);
+			const promise = run();
+			synchronous = false;
+			// Observe lifecycle settlement without replacing the native result promise.
+			// Both handlers fulfill the observer promise, so a native rejection cannot become unhandled.
+			void promise.then(finish, finish);
+			return promise;
 		} catch (err) {
 			finish();
 			throw err;
@@ -885,11 +943,27 @@ export class ExtensionRunner {
 		const runner = this;
 		const getModel = this.getModel;
 		const getScopedModels = this.getScopedModels;
+		const signal = this.getSignalFn();
+		const endRunPreservingQueue = this.endRunPreservingQueueFn
+			? () => {
+					runner.assertActive();
+					return runner.endRunPreservingQueueFn?.(signal);
+				}
+			: undefined;
+		const abortPreservingQueue = this.abortPreservingQueueFn
+			? () => {
+					runner.assertActive();
+					const abort = runner.abortPreservingQueueFn;
+					if (!abort) throw new Error("Queue-preserving abort is no longer available on this extension ctx");
+					abort();
+				}
+			: undefined;
 		return {
 			get ui() {
 				runner.assertActive();
 				return runner.uiContext;
 			},
+			inputProvenance: "pipeline-v1",
 			get mode() {
 				runner.assertActive();
 				return runner.mode;
@@ -938,6 +1012,8 @@ export class ExtensionRunner {
 				runner.assertActive();
 				runner.abortFn();
 			},
+			...(abortPreservingQueue ? { abortPreservingQueue } : {}),
+			...(endRunPreservingQueue ? { endRunPreservingQueue } : {}),
 			hasPendingMessages: () => {
 				runner.assertActive();
 				return runner.hasPendingMessagesFn();
@@ -1531,35 +1607,61 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let currentText = text;
 		let currentImages = images;
+		let settled = false;
+		let transformed = false;
+		let handled = false;
+		let failed = false;
+		const provenance = Object.freeze(
+			Object.defineProperties(
+				{},
+				{
+					source: { enumerable: true, get: () => source },
+					settled: { enumerable: true, get: () => settled },
+					transformed: { enumerable: true, get: () => transformed },
+					handled: { enumerable: true, get: () => handled },
+					failed: { enumerable: true, get: () => failed },
+				},
+			),
+		) as InputEventProvenance;
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "input")) {
-			for (const handler of handlers) {
-				try {
-					const event: InputEvent = {
-						type: "input",
-						text: currentText,
-						images: currentImages,
-						source,
-						streamingBehavior,
-					};
-					const result = (await handler(event, ctx)) as InputEventResult | undefined;
-					if (result?.action === "handled") return result;
-					if (result?.action === "transform") {
-						currentText = result.text;
-						currentImages = result.images ?? currentImages;
+		try {
+			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "input")) {
+				for (const handler of handlers) {
+					try {
+						const event: InputEvent = {
+							type: "input",
+							text: currentText,
+							images: currentImages,
+							source,
+							provenance,
+							streamingBehavior,
+						};
+						const result = (await handler(event, ctx)) as InputEventResult | undefined;
+						if (result?.action === "handled") {
+							handled = true;
+							return result;
+						}
+						if (result?.action === "transform") {
+							transformed = true;
+							currentText = result.text;
+							currentImages = result.images ?? currentImages;
+						}
+					} catch (err) {
+						failed = true;
+						this.emitError({
+							extensionPath: ext.path,
+							event: "input",
+							error: err instanceof Error ? err.message : String(err),
+							stack: err instanceof Error ? err.stack : undefined,
+						});
 					}
-				} catch (err) {
-					this.emitError({
-						extensionPath: ext.path,
-						event: "input",
-						error: err instanceof Error ? err.message : String(err),
-						stack: err instanceof Error ? err.stack : undefined,
-					});
 				}
 			}
+			return currentText !== text || currentImages !== images
+				? { action: "transform", text: currentText, images: currentImages }
+				: { action: "continue" };
+		} finally {
+			settled = true;
 		}
-		return currentText !== text || currentImages !== images
-			? { action: "transform", text: currentText, images: currentImages }
-			: { action: "continue" };
 	}
 }

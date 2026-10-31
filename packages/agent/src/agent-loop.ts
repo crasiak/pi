@@ -173,16 +173,18 @@ async function runLoop(
 	let lastCompletedTurn: PrepareNextTurnContext | undefined;
 	let explicitContinuation = false;
 	// Check for steering messages at start (user may have typed while waiting)
-	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+	let pendingMessages: AgentMessage[] = config.shouldStop?.() ? [] : (await config.getSteeringMessages?.()) || [];
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
-	while (true) {
+	run: while (true) {
 		let hasMoreToolCalls = true;
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
+			const stopped = config.shouldStop?.() === true;
+			if (stopped && pendingMessages.length === 0) break run;
 			let preparedMessages: AgentMessage[] = [];
-			if (lastCompletedTurn) {
+			if (lastCompletedTurn && !stopped) {
 				const nextTurnSnapshot = await config.prepareNextTurn?.(lastCompletedTurn);
 				if (nextTurnSnapshot) {
 					currentContext = nextTurnSnapshot.context ?? currentContext;
@@ -198,10 +200,13 @@ async function runLoop(
 									: nextTurnSnapshot.thinkingLevel,
 					};
 				}
+				const stoppedAfterPreparation = config.shouldStop?.() === true;
+				if (stoppedAfterPreparation && pendingMessages.length === 0 && preparedMessages.length === 0) break run;
 				// Preparation can be long-running (for example, compaction). Pick up steering
 				// queued while it ran. Only poll again if the earlier poll returned nothing;
 				// otherwise one-at-a-time mode would deliver two messages in this turn.
-				if (pendingMessages.length === 0) {
+				// After a stop, transfer only already-selected messages; never poll for more work.
+				if (!stoppedAfterPreparation && pendingMessages.length === 0) {
 					pendingMessages = (await config.getSteeringMessages?.()) || [];
 				}
 				await emit({ type: "turn_start" });
@@ -216,6 +221,7 @@ async function runLoop(
 			}
 			pendingMessages = [];
 
+			if (config.shouldStop?.()) break run;
 			const requestUpdate = await config.prepareRequest?.(
 				{
 					context: currentContext,
@@ -238,8 +244,10 @@ async function runLoop(
 				};
 			}
 
+			if (config.shouldStop?.()) break run;
 			// Stream assistant response
 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
+			if (!message) break run;
 			newMessages.push(message);
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -286,7 +294,7 @@ async function runLoop(
 			const decision = await config.finishTurn?.(lastCompletedTurn, signal);
 			await emit({ type: "turn_end", message, toolResults });
 
-			if (decision?.action === "end") {
+			if (decision?.action === "end" || config.shouldStop?.()) {
 				await emit({ type: "agent_end", messages: newMessages });
 				return;
 			}
@@ -299,6 +307,7 @@ async function runLoop(
 		}
 
 		// Agent would stop here. Check for follow-up messages.
+		if (config.shouldStop?.()) break;
 		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
@@ -384,22 +393,25 @@ async function streamAssistantResponse(
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 	streamFunction: StreamFn,
-): Promise<AssistantMessage> {
+): Promise<AssistantMessage | undefined> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
 	}
 
+	if (config.shouldStop?.()) return undefined;
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
 	const llmMessages = await config.convertToLlm(messages);
 
+	if (config.shouldStop?.()) return undefined;
 	const llmContext = normalizeContext({ messages: llmMessages });
 
 	// Resolve API key (important for expiring tokens)
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
 
+	if (config.shouldStop?.()) return undefined;
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
 		apiKey: resolvedApiKey,
