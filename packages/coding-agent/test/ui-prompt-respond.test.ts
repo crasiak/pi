@@ -4,6 +4,7 @@ import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type {
+	ExtensionError,
 	ExtensionHandler,
 	ExtensionUIContext,
 	UIPromptEndEvent,
@@ -26,9 +27,12 @@ function deferred<T>() {
 	});
 	return { promise, resolve, reject };
 }
-async function harness(opts: { respond?: (...args: Parameters<Responder>) => unknown } = {}) {
+type RespondFn = (...args: Parameters<Responder>) => unknown;
+/** One responder in the "/tmp" extension, or a list loaded as extensions "/tmp/r0", "/tmp/r1", ... */
+async function harness(opts: { respond?: RespondFn | RespondFn[] } = {}) {
 	const events: PromptEvent[] = [];
 	const runtime = createExtensionRuntime();
+	const single = typeof opts.respond === "function" ? opts.respond : undefined;
 	const extension = await loadExtensionFromFactory(
 		(pi) => {
 			pi.on("ui_prompt_start", (event) => {
@@ -37,14 +41,27 @@ async function harness(opts: { respond?: (...args: Parameters<Responder>) => unk
 			pi.on("ui_prompt_end", (event) => {
 				events.push(event);
 			});
-			if (opts.respond) pi.on("ui_prompt_respond", opts.respond as Responder);
+			if (single) pi.on("ui_prompt_respond", single as Responder);
 		},
 		"/tmp",
 		createEventBus(),
 		runtime,
 	);
+	const responders = await Promise.all(
+		(Array.isArray(opts.respond) ? opts.respond : []).map((respond, i) =>
+			loadExtensionFromFactory(
+				(pi) => {
+					pi.on("ui_prompt_respond", respond as Responder);
+				},
+				"/tmp",
+				createEventBus(),
+				runtime,
+				`/tmp/r${i}`,
+			),
+		),
+	);
 	const runner = new ExtensionRunner(
-		[extension],
+		[extension, ...responders],
 		runtime,
 		"/tmp",
 		SessionManager.inMemory(),
@@ -60,7 +77,9 @@ async function harness(opts: { respond?: (...args: Parameters<Responder>) => unk
 		custom: vi.fn(() => custom.promise) as ExtensionUIContext["custom"],
 	};
 	runner.setUIContext(raw, "tui");
-	return { runner, raw, ui: runner.getUIContext(), events, custom };
+	const errors: ExtensionError[] = [];
+	runner.onError((error) => errors.push(error));
+	return { runner, raw, ui: runner.getUIContext(), events, custom, errors };
 }
 
 afterEach(() => {
@@ -140,6 +159,22 @@ describe("ui_prompt_respond", () => {
 		const h = await harness({ respond: () => ({ value, answered_by: "afk/rules" }) });
 		expect(await h.ui.input("Name")).toBe(value);
 		expect(h.raw.input).not.toHaveBeenCalled();
+	});
+
+	it("reports a throwing responder and still lets a later one answer", async () => {
+		const h = await harness({
+			respond: [
+				() => {
+					throw new Error("boom");
+				},
+				() => ({ value: "other", answered_by: "afk/rules" }),
+			],
+		});
+		expect(await h.ui.select("Pick", ["choice", "other"])).toBe("other");
+		expect(h.raw.select).not.toHaveBeenCalled();
+		expect(h.errors).toEqual([
+			expect.objectContaining({ extensionPath: "/tmp/r0", event: "ui_prompt_respond", error: "boom" }),
+		]);
 	});
 
 	it("asks responders in order and the first valid result wins", async () => {
