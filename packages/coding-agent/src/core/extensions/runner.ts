@@ -661,12 +661,17 @@ export class ExtensionRunner {
 		});
 	}
 
-	/** First valid answer in handler order wins; the whole search is bounded by RESPOND_TIMEOUT_MS. */
+	/**
+	 * First valid answer in handler order wins; the whole search is bounded by RESPOND_TIMEOUT_MS.
+	 * Once it settles no further handler is called, though one already running may still finish.
+	 */
 	private async emitUIPromptRespond(event: UIPromptRespondEvent): Promise<UIPromptRespondResult | undefined> {
 		const ctx = this.createContext();
+		let settled = false;
 		const ask = (async () => {
 			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
 				for (const handler of handlers) {
+					if (settled) return undefined;
 					try {
 						const result = (await handler(event, ctx)) as UIPromptRespondResult | undefined;
 						if (result && typeof result === "object" && validResponse(event, result)) return result;
@@ -691,6 +696,7 @@ export class ExtensionRunner {
 				}),
 			]);
 		} finally {
+			settled = true;
 			clearTimeout(timer);
 		}
 	}

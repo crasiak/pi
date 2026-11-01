@@ -221,6 +221,21 @@ describe("ui_prompt_respond", () => {
 		expect(h.raw.confirm).toHaveBeenCalledOnce();
 	});
 
+	it("calls no later responder once the 5 s bound fires", async () => {
+		vi.useFakeTimers();
+		const slow = deferred<undefined>();
+		const later = vi.fn(() => ({ value: true, answered_by: "afk/rules" }));
+		const h = await harness({ respond: [() => slow.promise, later] });
+		const pending = h.ui.confirm("Sure?", "msg");
+		await vi.advanceTimersByTimeAsync(5001);
+		expect(await pending).toBe(true);
+		expect(h.raw.confirm).toHaveBeenCalledOnce();
+		slow.resolve(undefined);
+		await vi.advanceTimersByTimeAsync(0);
+		// Count rather than toHaveBeenCalled: printing the call would read ctx getters off a stopped runtime.
+		expect(later.mock.calls.length).toBe(0);
+	});
+
 	it("never consults responders for editor or custom", async () => {
 		const respond = vi.fn(() => ({ value: "x", answered_by: "afk/yolo" }));
 		const h = await harness({ respond });
