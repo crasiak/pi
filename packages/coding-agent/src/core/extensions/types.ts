@@ -1088,6 +1088,8 @@ export interface UIPromptStartEvent {
 	reason: "ui_prompt";
 	kind: UIPromptKind;
 	title?: string;
+	/** Set when a ui_prompt_respond handler answered the prompt instead of the native UI. */
+	answered_by?: string;
 }
 
 /** Fired when Pi is no longer waiting on a blocking user-facing extension UI prompt. */
@@ -1098,6 +1100,26 @@ export interface UIPromptEndEvent {
 	reason: "ui_prompt";
 	kind: UIPromptKind;
 	title?: string;
+	/** Set when a ui_prompt_respond handler answered the prompt instead of the native UI. */
+	answered_by?: string;
+}
+
+/** Fired before an outermost select, confirm or input dialog opens; a handler may answer it instead. */
+export interface UIPromptRespondEvent {
+	type: "ui_prompt_respond";
+	kind: "select" | "confirm" | "input";
+	title?: string;
+	message?: string;
+	options?: string[];
+	owner?: UIPromptOwner;
+}
+
+/** Answer to a ui_prompt_respond event. Invalid answers fall through to the native dialog. */
+export interface UIPromptRespondResult {
+	/** select: one of the options; confirm: a boolean; input: a string of at most 4096 characters. */
+	value: string | boolean;
+	/** Non-empty responder identity, at most 64 characters, reported on ui_prompt_start/end. */
+	answered_by: string;
 }
 
 /** Fired at the start of each turn */
@@ -1483,6 +1505,7 @@ export type ExtensionEvent =
 	| AgentSettledEvent
 	| UIPromptStartEvent
 	| UIPromptEndEvent
+	| UIPromptRespondEvent
 	| TurnStartEvent
 	| TurnEndEvent
 	| MessageStartEvent
@@ -1710,6 +1733,10 @@ export interface ExtensionAPI {
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): () => void;
 	on(event: "ui_prompt_start", handler: ExtensionHandler<UIPromptStartEvent>): () => void;
 	on(event: "ui_prompt_end", handler: ExtensionHandler<UIPromptEndEvent>): () => void;
+	on(
+		event: "ui_prompt_respond",
+		handler: ExtensionHandler<UIPromptRespondEvent, UIPromptRespondResult | undefined>,
+	): () => void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): () => void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent, TurnEndEventResult>): () => void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): () => void;

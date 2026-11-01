@@ -91,6 +91,8 @@ import type {
 	TurnEndEvent,
 	UIPromptKind,
 	UIPromptOwner,
+	UIPromptRespondEvent,
+	UIPromptRespondResult,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
@@ -187,6 +189,23 @@ function copyUIPromptOwner(options: unknown): UIPromptOwner | undefined {
 	}
 }
 
+function ownerOf(options: unknown): { owner?: UIPromptOwner } {
+	const owner = copyUIPromptOwner(options);
+	return owner ? { owner } : {};
+}
+
+const RESPOND_TIMEOUT_MS = 5000;
+const MAX_RESPOND_INPUT_LENGTH = 4096;
+const MAX_ANSWERED_BY_LENGTH = 64;
+
+function validResponse(event: UIPromptRespondEvent, result: UIPromptRespondResult): boolean {
+	const { value, answered_by } = result;
+	if (typeof answered_by !== "string" || !answered_by || answered_by.length > MAX_ANSWERED_BY_LENGTH) return false;
+	if (event.kind === "select") return typeof value === "string" && !!event.options?.includes(value);
+	if (event.kind === "confirm") return typeof value === "boolean";
+	return typeof value === "string" && value.length <= MAX_RESPOND_INPUT_LENGTH;
+}
+
 /** Combined result from all before_agent_start handlers. */
 interface BeforeAgentStartCombinedResult {
 	messages: NonNullable<BeforeAgentStartEventResult["message"]>[];
@@ -214,6 +233,7 @@ type RunnerEmitEvent = Exclude<
 	| InputEvent
 	| TurnEndEvent
 	| AgentBeforeSettleEvent
+	| UIPromptRespondEvent
 >;
 
 type SessionBeforeEvent = Extract<
@@ -601,15 +621,78 @@ export class ExtensionRunner {
 			// Advertise from the wrapper that implements it, never from a cancellation marker or version.
 			uiPromptOwnership: mode === "tui" ? "exclusive-v1" : undefined,
 			select: (title, options, opts) =>
-				this.withUIPrompt("select", title, opts, () => ui.select(title, options, opts)),
+				this.respondOr(
+					{ type: "ui_prompt_respond", kind: "select", title, options: [...options], ...ownerOf(opts) },
+					() => this.withUIPrompt("select", title, opts, () => ui.select(title, options, opts)),
+				),
 			confirm: (title, message, opts) =>
-				this.withUIPrompt("confirm", title, opts, () => ui.confirm(title, message, opts)),
+				this.respondOr({ type: "ui_prompt_respond", kind: "confirm", title, message, ...ownerOf(opts) }, () =>
+					this.withUIPrompt("confirm", title, opts, () => ui.confirm(title, message, opts)),
+				),
 			input: (title, placeholder, opts) =>
-				this.withUIPrompt("input", title, opts, () => ui.input(title, placeholder, opts)),
+				this.respondOr({ type: "ui_prompt_respond", kind: "input", title, ...ownerOf(opts) }, () =>
+					this.withUIPrompt("input", title, opts, () => ui.input(title, placeholder, opts)),
+				),
 			editor: (title, prefill) => this.withUIPrompt("editor", title, undefined, () => ui.editor(title, prefill)),
 			custom: (factory, options) =>
 				this.withUIPrompt("custom", undefined, options, () => ui.custom(factory, options)),
 		};
+	}
+
+	/**
+	 * Let ui_prompt_respond handlers answer an outermost dialog. Without handlers the native
+	 * dialog opens synchronously, exactly as before; any invalid or missing answer falls through.
+	 */
+	private respondOr<T>(event: UIPromptRespondEvent, native: () => Promise<T>): Promise<T> {
+		if (this.uiPromptDepth > 0 || !this.hasHandlers(event.type)) return native();
+		return this.emitUIPromptRespond(event).then((answer) => {
+			// A prompt that opened while responders deliberated owns the interval; do not interleave with it.
+			if (!answer || this.uiPromptDepth > 0) return native();
+			const base = {
+				reason: "ui_prompt",
+				kind: event.kind,
+				...(event.title ? { title: event.title } : {}),
+				...(event.owner ? { owner: event.owner } : {}),
+				answered_by: answer.answered_by,
+			} as const;
+			this.emitUIPromptEvent({ type: "ui_prompt_start", ...base });
+			this.emitUIPromptEvent({ type: "ui_prompt_end", ...base });
+			return answer.value as T;
+		});
+	}
+
+	/** First valid answer in handler order wins; the whole search is bounded by RESPOND_TIMEOUT_MS. */
+	private async emitUIPromptRespond(event: UIPromptRespondEvent): Promise<UIPromptRespondResult | undefined> {
+		const ctx = this.createContext();
+		const ask = (async () => {
+			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
+				for (const handler of handlers) {
+					try {
+						const result = (await handler(event, ctx)) as UIPromptRespondResult | undefined;
+						if (result && typeof result === "object" && validResponse(event, result)) return result;
+					} catch (err) {
+						this.emitError({
+							extensionPath: ext.path,
+							event: event.type,
+							error: err instanceof Error ? err.message : String(err),
+							stack: err instanceof Error ? err.stack : undefined,
+						});
+					}
+				}
+			}
+			return undefined;
+		})();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				ask,
+				new Promise<undefined>((resolve) => {
+					timer = setTimeout(() => resolve(undefined), RESPOND_TIMEOUT_MS);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	private withUIPrompt<T>(
