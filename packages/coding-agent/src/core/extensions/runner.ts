@@ -668,7 +668,18 @@ export class ExtensionRunner {
 	 * Once it settles no further handler is called, though one already running may still finish.
 	 */
 	private async emitUIPromptRespond(event: UIPromptRespondEvent): Promise<UIPromptRespondResult | undefined> {
-		const ctx = this.createContext();
+		let ctx: ExtensionContext;
+		try {
+			ctx = this.createContext();
+		} catch (err) {
+			this.emitError({
+				extensionPath: "<runtime>",
+				event: event.type,
+				error: err instanceof Error ? err.message : String(err),
+				stack: err instanceof Error ? err.stack : undefined,
+			});
+			return undefined;
+		}
 		let settled = false;
 		// Count before the first handler runs: it may open a dialog before its first await.
 		this.respondingDepth++;

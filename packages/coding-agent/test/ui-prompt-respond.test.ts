@@ -252,6 +252,20 @@ describe("ui_prompt_respond", () => {
 		expect(h.errors).toEqual([]);
 	});
 
+	it("falls through to the native dialog when the responder context cannot be built", async () => {
+		const respond = vi.fn(() => ({ value: "choice", answered_by: "afk/rules" }));
+		const h = await harness({ respond });
+		vi.spyOn(h.runner, "createContext").mockImplementationOnce(() => {
+			throw new Error("no ctx");
+		});
+		expect(await h.ui.select("Pick", ["choice"])).toBe("choice");
+		expect(h.raw.select).toHaveBeenCalledOnce();
+		expect(respond).not.toHaveBeenCalled();
+		expect(h.errors).toEqual([
+			expect.objectContaining({ extensionPath: "<runtime>", event: "ui_prompt_respond", error: "no ctx" }),
+		]);
+	});
+
 	it("never consults responders for editor or custom", async () => {
 		const respond = vi.fn(() => ({ value: "x", answered_by: "afk/yolo" }));
 		const h = await harness({ respond });
