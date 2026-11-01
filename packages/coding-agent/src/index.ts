@@ -194,6 +194,8 @@ export type {
 	UIPromptEndEvent,
 	UIPromptKind,
 	UIPromptOwner,
+	UIPromptRespondEvent,
+	UIPromptRespondResult,
 	UIPromptStartEvent,
 	UserBashEvent,
 	UserBashEventResult,

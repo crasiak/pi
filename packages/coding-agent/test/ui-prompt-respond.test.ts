@@ -4,16 +4,16 @@ import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type {
-	ExtensionError,
 	ExtensionContext,
+	ExtensionError,
 	ExtensionHandler,
 	ExtensionUIContext,
 	UIPromptEndEvent,
-	UIPromptRespondEvent,
-	UIPromptRespondResult,
 	UIPromptStartEvent,
 } from "../src/core/extensions/types.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+// The responder types come from the package root, as extension authors import them.
+import type { UIPromptRespondEvent, UIPromptRespondResult } from "../src/index.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
 const owner = { namespace: "test", id: "interaction" };
