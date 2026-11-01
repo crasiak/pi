@@ -265,7 +265,7 @@ Keep tool and event behavior independent from rendering so non-interactive modes
 
 <a id="ui_prompt_respond"></a>
 
-`ui_prompt_respond` lets an extension answer a `select`, `confirm` or `input` dialog instead of the user. It fires before an outermost dialog of those kinds opens, with `kind`, `title`, `message` (confirm), `options` (select) and the validated `owner`. A dialog opened while another dialog is open never consults it, nor do `editor` and `custom` dialogs. Return `{ value, answered_by }` to answer, or `undefined` to decline.
+`ui_prompt_respond` lets an extension answer a `select`, `confirm` or `input` dialog instead of the user. It fires before an outermost dialog of those kinds opens, with `kind`, `title`, `message` (confirm), `options` (select) and the validated `owner`. A dialog opened while another dialog is open or while handlers deliberate (including one a handler opens itself) never consults it, nor do `editor` and `custom` dialogs. Return `{ value, answered_by }` to answer, or `undefined` to decline.
 
 Handlers run in order and the first valid answer wins. `value` must be one of `options` for `select`, a boolean for `confirm`, and a string of at most 4096 characters for `input`. `answered_by` must be a non-empty string of at most 64 characters. The whole search is bounded at 5 seconds; once it times out or a valid answer is found, no further handler is called. An invalid answer, a declined or throwing handler, the timeout, or another dialog opening while handlers deliberate makes Pi show the native dialog as usual. An answered dialog still emits `ui_prompt_start` and `ui_prompt_end`, both carrying `answered_by`. With no `ui_prompt_respond` handler, dialogs behave exactly as they would without the hook.
 

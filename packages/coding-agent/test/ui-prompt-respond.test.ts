@@ -5,6 +5,7 @@ import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/ex
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type {
 	ExtensionError,
+	ExtensionContext,
 	ExtensionHandler,
 	ExtensionUIContext,
 	UIPromptEndEvent,
@@ -234,6 +235,21 @@ describe("ui_prompt_respond", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		// Count rather than toHaveBeenCalled: printing the call would read ctx getters off a stopped runtime.
 		expect(later.mock.calls.length).toBe(0);
+	});
+
+	it("gives a responder that opens a dialog the native dialog", async () => {
+		const respond = vi.fn(async (_event: UIPromptRespondEvent, ctx: ExtensionContext) => {
+			// Guard so a regression recurses once instead of forever.
+			if (respond.mock.calls.length > 1) return undefined;
+			const ok = await ctx.ui.confirm("Really?", "inner");
+			return { value: ok ? "other" : "choice", answered_by: "afk/rules" };
+		});
+		const h = await harness({ respond });
+		expect(await h.ui.select("Pick", ["choice", "other"])).toBe("other");
+		expect(respond).toHaveBeenCalledOnce();
+		expect(h.raw.confirm).toHaveBeenCalledOnce();
+		expect(h.raw.select).not.toHaveBeenCalled();
+		expect(h.errors).toEqual([]);
 	});
 
 	it("never consults responders for editor or custom", async () => {

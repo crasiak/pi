@@ -436,6 +436,8 @@ export class ExtensionRunner {
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 	private uiPromptDepth = 0;
+	/** Open ui_prompt_respond searches; dialogs requested meanwhile (e.g. by a responder) open natively. */
+	private respondingDepth = 0;
 	private activeUIPrompt: { kind: UIPromptKind; title?: string; owner?: UIPromptOwner } | undefined;
 
 	constructor(
@@ -644,7 +646,7 @@ export class ExtensionRunner {
 	 * dialog opens synchronously, exactly as before; any invalid or missing answer falls through.
 	 */
 	private respondOr<T>(event: UIPromptRespondEvent, native: () => Promise<T>): Promise<T> {
-		if (this.uiPromptDepth > 0 || !this.hasHandlers(event.type)) return native();
+		if (this.uiPromptDepth > 0 || this.respondingDepth > 0 || !this.hasHandlers(event.type)) return native();
 		return this.emitUIPromptRespond(event).then((answer) => {
 			// A prompt that opened while responders deliberated owns the interval; do not interleave with it.
 			if (!answer || this.uiPromptDepth > 0) return native();
@@ -668,6 +670,8 @@ export class ExtensionRunner {
 	private async emitUIPromptRespond(event: UIPromptRespondEvent): Promise<UIPromptRespondResult | undefined> {
 		const ctx = this.createContext();
 		let settled = false;
+		// Count before the first handler runs: it may open a dialog before its first await.
+		this.respondingDepth++;
 		const ask = (async () => {
 			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
 				for (const handler of handlers) {
@@ -697,6 +701,7 @@ export class ExtensionRunner {
 			]);
 		} finally {
 			settled = true;
+			this.respondingDepth--;
 			clearTimeout(timer);
 		}
 	}
