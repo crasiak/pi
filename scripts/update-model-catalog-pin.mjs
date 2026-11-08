@@ -69,6 +69,27 @@ function hydrationProblem(root, bytes) {
 }
 
 /**
+ * Hydrate the checkout's provider data from the pinned catalog revision only,
+ * as the Nix build does: no live discovery and no pin update. The revision's
+ * bytes must match its hash before any provider data is written.
+ */
+export async function hydratePinnedModelData(root) {
+	const pinPath = join(root, "nix/model-catalog.json");
+	const { revision } = JSON.parse(readFileSync(pinPath, "utf8"));
+	if (typeof revision !== "string" || !REVISION_RE.test(revision)) throw new Error(`Invalid pin in ${pinPath}`);
+	const bytes = await fetchRevision(revision);
+	const directory = mkdtempSync(join(tmpdir(), "pi-model-catalog-pin-"));
+	try {
+		const catalogPath = join(directory, "models.all.json");
+		writeFileSync(catalogPath, bytes);
+		hydrateModelCatalog(join(root, "packages/ai"), catalogPath);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+	return revision;
+}
+
+/**
  * Pin the live model catalog for Nix builds. With `ifStale`, keep the current
  * pin while it still hydrates this checkout and has every model type the live
  * catalog has for the checkout's providers.
@@ -106,10 +127,14 @@ export async function updateModelCatalogPin(root, { ifStale = false } = {}) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
 	const args = process.argv.slice(2);
-	if (args.length > 1 || (args.length === 1 && args[0] !== "--if-stale")) {
-		throw new Error("Usage: node scripts/update-model-catalog-pin.mjs [--if-stale]");
+	if (args.length > 1 || (args.length === 1 && args[0] !== "--if-stale" && args[0] !== "--hydrate")) {
+		throw new Error("Usage: node scripts/update-model-catalog-pin.mjs [--if-stale | --hydrate]");
 	}
 	const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const { revision, updated } = await updateModelCatalogPin(root, { ifStale: args[0] === "--if-stale" });
-	console.log(`${updated ? "Pinned" : "Kept"} model catalog ${revision}`);
+	if (args[0] === "--hydrate") {
+		console.log(`Hydrated pinned model catalog ${await hydratePinnedModelData(root)}`);
+	} else {
+		const { revision, updated } = await updateModelCatalogPin(root, { ifStale: args[0] === "--if-stale" });
+		console.log(`${updated ? "Pinned" : "Kept"} model catalog ${revision}`);
+	}
 }
