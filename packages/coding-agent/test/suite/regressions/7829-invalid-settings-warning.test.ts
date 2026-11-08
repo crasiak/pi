@@ -1,6 +1,7 @@
 import { Container } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSessionRuntimeDiagnostic } from "../../../src/core/agent-session-services.ts";
+import { SafeStopGate } from "../../../src/core/safe-stop.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { createHarness } from "../harness.ts";
@@ -25,6 +26,8 @@ describe("issue #7829 invalid settings warning", () => {
 				},
 			];
 			const context = {
+				refreshWork: new SafeStopGate(),
+				startManagedRefreshBridge: vi.fn(async () => {}),
 				init: vi.fn(async () => {}),
 				options: { startupDiagnostics },
 				chatContainer,

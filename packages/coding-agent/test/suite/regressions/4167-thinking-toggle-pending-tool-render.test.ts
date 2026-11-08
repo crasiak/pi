@@ -3,6 +3,7 @@ import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works
 import { Container, Text, type TUI } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
+import { SafeStopGate } from "../../../src/core/safe-stop.ts";
 import type { SessionEntry } from "../../../src/core/session-manager.ts";
 import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
@@ -34,6 +35,7 @@ type RenderSessionItems = (
 ) => void;
 
 type RenderSessionContextThis = {
+	refreshWork: SafeStopGate;
 	pendingTools: Map<string, ToolExecutionComponent>;
 	chatContainer: Container;
 	footer: { invalidate(): void };
@@ -66,6 +68,7 @@ type HandleEvent = (this: RenderSessionContextThis, event: AgentSessionEvent) =>
 function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	const chatContainer = new Container();
 	return {
+		refreshWork: new SafeStopGate(),
 		pendingTools: new Map<string, ToolExecutionComponent>(),
 		chatContainer,
 		footer: { invalidate: vi.fn() },

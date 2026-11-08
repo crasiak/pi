@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.ts";
 import type { ExtensionAPI, UserBashEvent, UserBashEventResult } from "../../../src/core/extensions/types.ts";
+import { SafeStopGate } from "../../../src/core/safe-stop.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { runRpcMode } from "../../../src/modes/rpc/rpc-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
@@ -115,6 +116,8 @@ async function startRpcHarness(extension: (pi: ExtensionAPI) => void): Promise<{
 }
 
 type InteractiveBashContext = {
+	refreshWork: SafeStopGate;
+	submitEditorText(text: string): Promise<void>;
 	defaultEditor: { onSubmit?: (text: string) => Promise<void> | void };
 	editor: { addToHistory?: (text: string) => void };
 	session: Harness["session"];
@@ -131,6 +134,7 @@ type InteractiveBashContext = {
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as {
 	setupEditorSubmitHandler(this: InteractiveBashContext): void;
+	submitEditorText(this: InteractiveBashContext, text: string): Promise<void>;
 	handleBashCommand(this: InteractiveBashContext, command: string, excludeFromContext?: boolean): Promise<void>;
 };
 
@@ -237,6 +241,8 @@ describe("Interactive user_bash failure handling (#9068)", () => {
 		});
 		const executeBash = vi.spyOn(harness.session, "executeBash").mockResolvedValue(localResult);
 		const context: InteractiveBashContext = {
+			refreshWork: new SafeStopGate(),
+			submitEditorText: interactiveModePrototype.submitEditorText,
 			defaultEditor: {},
 			editor: { addToHistory: vi.fn() },
 			session: harness.session,

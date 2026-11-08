@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../../../src/core/keybindings.ts";
+import { SafeStopGate } from "../../../src/core/safe-stop.ts";
 import { ScopedModelsSelectorComponent } from "../../../src/modes/interactive/components/scoped-models-selector.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme, theme } from "../../../src/modes/interactive/theme/theme.ts";
@@ -17,6 +18,7 @@ function createInteractiveContext(options: {
 	const setScopedModels = vi.fn();
 	const getAvailableSnapshot = vi.fn(() => options.allModels);
 	const context = {
+		refreshWork: new SafeStopGate(),
 		session: {
 			modelRuntime: {
 				refresh: vi.fn().mockResolvedValue({ aborted: false, errors: new Map() }),

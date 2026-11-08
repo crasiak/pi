@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { defaultModelPerProvider } from "../../../src/core/model-resolver.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
+import { SafeStopGate } from "../../../src/core/safe-stop.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
 
@@ -100,6 +101,7 @@ describe("issues #7027 and #7113 credential refresh hang", () => {
 		);
 		const showWarning = vi.fn();
 		const context = {
+			refreshWork: new SafeStopGate(),
 			session: harness.session,
 			updateAvailableProviderCount: vi.fn(),
 			footer: { invalidate: vi.fn() },
@@ -152,6 +154,7 @@ describe("post-login model discovery", () => {
 		);
 		const setModel = vi.spyOn(session, "setModel").mockResolvedValue();
 		const context = {
+			refreshWork: new SafeStopGate(),
 			session,
 			updateAvailableProviderCount: vi.fn(),
 			footer: { invalidate: vi.fn() },
