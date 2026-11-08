@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { SafeStopGate } from "../../../src/core/safe-stop.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 
 type RebindContext = {
+	refreshWork: SafeStopGate;
 	session: object;
 	unsubscribe?: () => void;
 	applyRuntimeSettings: () => void;
@@ -39,6 +41,7 @@ describe("overlapping startup and replacement session rebinds", () => {
 		let bindCount = 0;
 
 		const context: RebindContext = {
+			refreshWork: new SafeStopGate(),
 			session: startupSession,
 			applyRuntimeSettings: () => {},
 			programStatus: { reset: () => {} },

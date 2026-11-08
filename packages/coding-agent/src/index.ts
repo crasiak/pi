@@ -244,8 +244,15 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+export {
+	RefreshController,
+	type RefreshIdentity,
+	type RefreshRequest,
+	type RefreshResponse,
+} from "./core/refresh-bridge.ts";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+export { SafeStopGate, type SafeStopParticipant, type SafeStopStatus } from "./core/safe-stop.ts";
 // SDK for programmatic usage
 export {
 	AgentSessionRuntime,

@@ -69,6 +69,8 @@ A steering message enters after the current assistant turn and its tool calls. A
 
 `abort()` stops the active operation and waits for the session to become idle. `waitForIdle()` waits without aborting it.
 
+For conditional graceful stop, use the [native safe-refresh admission contract](safe-refresh.md), not `isIdle` followed by shutdown. `probeSafeStop()` observes; `tryBeginSafeStop()` atomically fences core ingress. A host must also account for its own work and input. Arbitrary extension or SDK background work is not inferred idle.
+
 ## Subscribing to events
 
 Subscribe before prompting when the host needs streamed output:

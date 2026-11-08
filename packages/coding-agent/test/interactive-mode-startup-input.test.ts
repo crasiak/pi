@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { SafeStopGate } from "../src/core/safe-stop.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type SubmitContext = {
+	refreshWork: SafeStopGate;
+	submitEditorText: (text: string) => Promise<void>;
 	defaultEditor: { onSubmit?: (text: string) => void };
 	editor: {
 		addToHistory?: (text: string) => void;
@@ -29,6 +32,7 @@ type StartupSubmitContext = {
 };
 
 type InteractiveModePrivate = {
+	submitEditorText(this: SubmitContext, text: string): Promise<void>;
 	handleStartupSubmit(this: StartupSubmitContext, text: string): void;
 	setupEditorSubmitHandler(this: SubmitContext): void;
 	getUserInput(this: InputContext): Promise<string>;
@@ -38,6 +42,10 @@ const interactiveModePrototype = InteractiveMode.prototype as unknown as Interac
 
 function createSubmitContext(): SubmitContext {
 	return {
+		refreshWork: new SafeStopGate(),
+		submitEditorText(text) {
+			return interactiveModePrototype.submitEditorText.call(this, text);
+		},
 		defaultEditor: {},
 		editor: {
 			addToHistory: vi.fn(),

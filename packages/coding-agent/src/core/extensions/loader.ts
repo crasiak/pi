@@ -17,6 +17,7 @@ import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import { type McpServerConfig, McpServerRegistry, mcpNamespace, validateMcpServerConfig } from "../mcp-servers.ts";
 import { readPiManifest } from "../pi-manifest.ts";
+import { SafeStopGate } from "../safe-stop.ts";
 import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type { ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
@@ -167,6 +168,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 	};
 
 	const runtime: ExtensionRuntime = {
+		safeStop: new SafeStopGate(),
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
@@ -257,6 +259,10 @@ function createExtensionAPI(
 		}
 		runtime.assertActive();
 	};
+	const assertIngress = () => {
+		assertActive();
+		runtime.safeStop.assertOpen();
+	};
 	const applyRuntimeChange = (change: () => void) => {
 		if (state === "loading") pendingRuntimeChanges.push(change);
 		else change();
@@ -268,10 +274,24 @@ function createExtensionAPI(
 	};
 
 	const api = {
+		registerSafeStop(options: { version: 1 }) {
+			assertIngress();
+			if (state !== "loading" || options.version !== 1 || extension.safeStopQualified) {
+				throw new Error("Safe-stop support must be declared once during extension loading");
+			}
+			extension.safeStopQualified = true;
+			return {
+				beginWork: () => {
+					assertIngress();
+					return runtime.safeStop.beginWork();
+				},
+			};
+		},
 		// Registration methods - write to extension
 		on(event: string, handler: HandlerFn): () => void {
-			assertActive();
-			const registeredHandler: HandlerFn = (...args) => handler(...args);
+			assertIngress();
+			const registeredHandler: HandlerFn = (...args) =>
+				event === "session_shutdown" ? handler(...args) : runtime.safeStop.run(() => handler(...args));
 			const list = extension.handlers.get(event) ?? [];
 			list.push(registeredHandler);
 			extension.handlers.set(event, list);
@@ -287,7 +307,7 @@ function createExtensionAPI(
 		},
 
 		registerTool(tool: ToolDefinition): void {
-			assertActive();
+			assertIngress();
 			if (typeof tool.parameters !== "object" || tool.parameters === null || Array.isArray(tool.parameters)) {
 				throw new Error(
 					`Tool "${tool.name}" registered by extension "${extension.path}" must define an object parameter schema.`,
@@ -301,7 +321,7 @@ function createExtensionAPI(
 		},
 
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
-			assertActive();
+			assertIngress();
 			if (typeof name !== "string" || name.length === 0) {
 				throw new Error(
 					`Command registered by extension "${extension.path}" must have a non-empty string name. Use pi.registerCommand("name", { description, handler }).`,
@@ -324,7 +344,7 @@ function createExtensionAPI(
 				handler: (ctx: import("./types.ts").ExtensionContext) => Promise<void> | void;
 			},
 		): void {
-			assertActive();
+			assertIngress();
 			extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options });
 		},
 
@@ -332,7 +352,7 @@ function createExtensionAPI(
 			name: string,
 			options: { description?: string; type: "boolean" | "string"; default?: boolean | string },
 		): void {
-			assertActive();
+			assertIngress();
 			if (options.default !== undefined && typeof options.default !== options.type) {
 				throw new Error(
 					`Invalid default for flag "${name}": expected ${options.type}, got ${typeof options.default}`,
@@ -349,23 +369,23 @@ function createExtensionAPI(
 		},
 
 		registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
-			assertActive();
+			assertIngress();
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
 		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
-			assertActive();
+			assertIngress();
 			extension.markdownTransformer = transformer;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
-			assertActive();
+			assertIngress();
 			extension.entryRenderers ??= new Map();
 			extension.entryRenderers.set(customType, renderer as EntryRenderer);
 		},
 
 		registerToolRenderer(resolver: ToolRendererResolver): void {
-			assertActive();
+			assertIngress();
 			extension.toolRenderers ??= [];
 			extension.toolRenderers.push(resolver);
 		},
@@ -379,12 +399,12 @@ function createExtensionAPI(
 
 		// Action methods - delegate to shared runtime
 		sendMessage(message, options): void {
-			assertActive();
+			assertIngress();
 			runtime.sendMessage(message, options);
 		},
 
 		sendUserMessage(content, options): void {
-			assertActive();
+			assertIngress();
 			runtime.sendUserMessage(content, options);
 		},
 
@@ -394,7 +414,7 @@ function createExtensionAPI(
 		},
 
 		setSessionName(name: string): void {
-			assertActive();
+			assertIngress();
 			runtime.setSessionName(name);
 		},
 
@@ -404,13 +424,13 @@ function createExtensionAPI(
 		},
 
 		setLabel(entryId: string, label: string | undefined): void {
-			assertActive();
+			assertIngress();
 			runtime.setLabel(entryId, label);
 		},
 
 		exec(command: string, args: string[], options?: ExecOptions) {
-			assertActive();
-			return execCommand(command, args, options?.cwd ?? cwd, options);
+			assertIngress();
+			return runtime.safeStop.run(() => execCommand(command, args, options?.cwd ?? cwd, options));
 		},
 
 		getActiveTools(): string[] {
@@ -429,7 +449,7 @@ function createExtensionAPI(
 		},
 
 		setActiveTools(toolNames: string[]): void {
-			assertActive();
+			assertIngress();
 			runtime.setActiveTools(toolNames);
 		},
 
@@ -439,7 +459,7 @@ function createExtensionAPI(
 		},
 
 		setModel(model) {
-			assertActive();
+			assertIngress();
 			return runtime.setModel(model);
 		},
 
@@ -449,12 +469,12 @@ function createExtensionAPI(
 		},
 
 		setThinkingLevel(level) {
-			assertActive();
+			assertIngress();
 			runtime.setThinkingLevel(level);
 		},
 
 		registerProvider(providerOrName: Provider | string, config?: ProviderConfig) {
-			assertActive();
+			assertIngress();
 			if (typeof providerOrName === "string") {
 				if (!config) throw new Error("Provider config is required when registering by name");
 				applyRuntimeChange(() => runtime.registerProvider(providerOrName, config, extension.path));
@@ -469,7 +489,7 @@ function createExtensionAPI(
 		},
 
 		registerMcpServer(name: string, config: McpServerConfig) {
-			assertActive();
+			assertIngress();
 			const validated = validateMcpServerConfig(name, config);
 			if (typeof validated === "string") {
 				throw new Error(`Invalid MCP server registered by extension "${extension.path}": ${validated}`);
@@ -498,7 +518,7 @@ function createExtensionAPI(
 		},
 
 		registerVirtualModel<TState>(model: ExtensionVirtualModel<TState>) {
-			assertActive();
+			assertIngress();
 			// Routing runs after the runner binds, so the context is created per request. The state
 			// comes from the session branch that this router wrote.
 			const definition: VirtualModelDefinition = {

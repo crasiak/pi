@@ -2,6 +2,7 @@ import type { Api, Model, ModelsRefreshResult } from "@earendil-works/pi-ai";
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../../../src/core/keybindings.ts";
+import { SafeStopGate } from "../../../src/core/safe-stop.ts";
 import type { ScopedModelsSelectorComponent } from "../../../src/modes/interactive/components/scoped-models-selector.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
@@ -26,6 +27,7 @@ function openSelector(harness: Harness, initialModels: readonly Model<Api>[]) {
 			}),
 	);
 	const context = {
+		refreshWork: new SafeStopGate(),
 		session: harness.session,
 		settingsManager: harness.settingsManager,
 		showSelector: (

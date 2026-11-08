@@ -6,6 +6,7 @@ import { type Component, Container, type Focusable, type TUI } from "../../tui/s
 import { TuiMainScreen } from "../../tui/src/tui-main-screen.ts";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
+import { SafeStopGate } from "../src/core/safe-stop.ts";
 import type { QuietStartup } from "../src/core/settings-manager.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
 import type { AuthSelectorProvider } from "../src/modes/interactive/components/oauth-selector.ts";
@@ -249,6 +250,7 @@ describe("InteractiveMode.showExtensionCustom", () => {
 			throw new Error("closeReplacement was not initialized");
 		};
 		const fakeThis = {
+			refreshWork: new SafeStopGate(),
 			editor,
 			editorContainer,
 			keybindings: {},

@@ -3,6 +3,7 @@ import { Container, getKeybindings, isViewportTUI, ScrollView, setKeybindings, T
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { SafeStopGate } from "../src/core/safe-stop.ts";
 import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
 import {
 	BranchSummaryStatusIndicator,
@@ -188,6 +189,7 @@ describe("InteractiveMode right-click paste", () => {
 		const target = { render: () => [], invalidate: () => {}, handleInput } satisfies Component;
 		const requestRender = vi.fn();
 		const context = {
+			refreshWork: new SafeStopGate(),
 			renderer: { getFocusedComponent: () => target },
 			ui: { requestRender },
 		};
@@ -252,6 +254,7 @@ describe("InteractiveMode copy confirmation", () => {
 			await terminal.waitForRender();
 			clipboardMocks.copyToClipboard.mockClear();
 
+			Object.assign(context, { refreshWork: new SafeStopGate() });
 			await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true, preferSelection: true });
 			await terminal.waitForRender();
 
@@ -294,6 +297,7 @@ describe("InteractiveMode copy confirmation", () => {
 			await terminal.waitForRender();
 			clipboardMocks.copyToClipboard.mockClear();
 
+			Object.assign(context, { refreshWork: new SafeStopGate() });
 			await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true, preferSelection: true });
 			await terminal.waitForRender();
 
@@ -328,6 +332,7 @@ describe("InteractiveMode copy confirmation", () => {
 		ui.start();
 		try {
 			await terminal.waitForRender();
+			Object.assign(context, { refreshWork: new SafeStopGate() });
 			await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true, preferSelection: true });
 			await terminal.waitForRender();
 
@@ -356,6 +361,7 @@ describe("InteractiveMode copy confirmation", () => {
 			showError,
 		};
 
+		Object.assign(context, { refreshWork: new SafeStopGate() });
 		await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true, preferSelection: true });
 
 		expect(showStatus).toHaveBeenCalledWith("Copied last agent message to clipboard");

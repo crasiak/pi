@@ -2,6 +2,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
+import { SafeStopGate } from "../../../src/core/safe-stop.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { createHarness, createTestUiContext } from "../harness.ts";
@@ -51,6 +52,7 @@ type RebindContext = {
 };
 
 type ReloadCommandContext = {
+	refreshWork: SafeStopGate;
 	hideThinkingBlock: boolean;
 	session: {
 		isStreaming: boolean;
@@ -120,6 +122,7 @@ type ReloadCommandContextOverrides = Omit<
 function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {}): ReloadCommandContext {
 	const editor = overrides.editor ?? {};
 	return {
+		refreshWork: new SafeStopGate(),
 		hideThinkingBlock: overrides.hideThinkingBlock ?? false,
 		session: {
 			isStreaming: false,
@@ -268,6 +271,7 @@ describe("regression #5943: session_start transient UI", () => {
 				updateTerminalTitle: () => {},
 			};
 
+			Object.assign(context, { refreshWork: new SafeStopGate() });
 			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
 
 			expect(events).toEqual(["apply", "render", "subscribe", "bind", "notify:Hello Error"]);
@@ -318,6 +322,7 @@ describe("regression #5943: session_start transient UI", () => {
 				updateTerminalTitle: () => {},
 			};
 
+			Object.assign(context, { refreshWork: new SafeStopGate() });
 			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
 
 			expect(events).toEqual([
@@ -371,6 +376,7 @@ describe("regression #5943: session_start transient UI", () => {
 				updateTerminalTitle: () => {},
 			};
 
+			Object.assign(context, { refreshWork: new SafeStopGate() });
 			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
 			await harness.session.agent.waitForIdle();
 

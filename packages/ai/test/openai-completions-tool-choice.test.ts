@@ -1309,7 +1309,8 @@ describe("openai-completions tool_choice", () => {
 		const replayedAssistant = params.messages?.find((message) => message.role === "assistant");
 		expect(replayedAssistant).toMatchObject({ role: "assistant", reasoning_content: "" });
 		expect(params.thinking).toEqual({ type: "enabled" });
-		expect(params.reasoning_effort).toBe("high");
+		// The pinned catalog marks MiMo with supportsReasoningEffort: false.
+		expect(params.reasoning_effort).toBeUndefined();
 	});
 
 	it("normalizes OpenCode Go reasoning deltas to reasoning_content for replay", async () => {

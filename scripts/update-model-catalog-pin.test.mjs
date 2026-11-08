@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, mock, test } from "node:test";
-import { updateModelCatalogPin } from "./update-model-catalog-pin.mjs";
+import { hydratePinnedModelData, updateModelCatalogPin } from "./update-model-catalog-pin.mjs";
 
 const model = {
 	type: "chat",
@@ -147,3 +147,24 @@ test("does not treat an unreachable pinned revision as stale", async () => {
 	await assert.rejects(updateModelCatalogPin(root, { ifStale: true }), /unavailable/);
 	assert.equal(readPin(), pinFile(currentRevision));
 });
+
+test("hydrates only the immutable pinned catalog without live discovery or a pin update", async () => {
+	const requests = mockPiDev();
+	assert.equal(await hydratePinnedModelData(root), currentRevision);
+	assert.deepEqual(requests, [`https://pi.dev/api/models/revisions/${currentRevision}?${typed}`]);
+	assert.equal(readPin(), pinFile(currentRevision));
+	const data = JSON.parse(readFileSync(join(root, "packages/ai/src/providers/data/test-provider.json"), "utf8"));
+	assert.deepEqual(Object.keys(data["openai-completions"]), ["chat:model-a"]);
+});
+
+for (const failure of ["invalid-pin", "revision-http", "revision-hash"]) {
+	test(`refuses pinned hydration on ${failure} without writing provider data`, async () => {
+		if (failure === "invalid-pin") writeFileSync(join(root, "nix/model-catalog.json"), pinFile("latest"));
+		const before = readPin();
+		const requests = mockPiDev({ failure });
+		await assert.rejects(hydratePinnedModelData(root));
+		assert.equal(readPin(), before);
+		assert.equal(existsSync(join(root, "packages/ai/src/providers/data")), false);
+		if (failure === "invalid-pin") assert.deepEqual(requests, []);
+	});
+}

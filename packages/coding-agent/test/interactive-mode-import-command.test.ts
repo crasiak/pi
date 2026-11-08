@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionImportFileNotFoundError } from "../src/core/agent-session-runtime.ts";
+import { SafeStopGate } from "../src/core/safe-stop.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type PathCommand = "/export" | "/import";
@@ -10,6 +11,7 @@ type InteractiveModePrototype = {
 };
 
 type ImportCommandContext = {
+	refreshWork: SafeStopGate;
 	clearStatusIndicator: () => void;
 	runtimeHost: { importFromJsonl: (inputPath: string, cwdOverride?: string) => Promise<{ cancelled: boolean }> };
 	showError: (message: string) => void;
@@ -57,6 +59,7 @@ describe("InteractiveMode /import parsing", () => {
 		const showError = vi.fn();
 
 		const context: ImportCommandContext = {
+			refreshWork: new SafeStopGate(),
 			clearStatusIndicator: vi.fn(),
 			runtimeHost: { importFromJsonl },
 			showError,
@@ -89,6 +92,7 @@ describe("InteractiveMode /import parsing", () => {
 		const showError = vi.fn();
 
 		const context: ImportCommandContext = {
+			refreshWork: new SafeStopGate(),
 			clearStatusIndicator: vi.fn(),
 			runtimeHost: { importFromJsonl },
 			showError,
@@ -122,6 +126,7 @@ describe("InteractiveMode /import parsing", () => {
 		});
 
 		const context: ImportCommandContext = {
+			refreshWork: new SafeStopGate(),
 			clearStatusIndicator: vi.fn(),
 			runtimeHost: { importFromJsonl },
 			showError,

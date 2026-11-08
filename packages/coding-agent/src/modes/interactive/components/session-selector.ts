@@ -14,6 +14,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
+import { SafeStopGate } from "../../../core/safe-stop.ts";
 import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
 import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
@@ -707,6 +708,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	}
 
 	private canRename = true;
+	private readonly work: SafeStopGate;
+	private disposed = false;
 	private sessionList: SessionList;
 	private header: SessionSelectorHeader;
 	private keybindings: KeybindingsManager;
@@ -765,10 +768,12 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
+			work?: SafeStopGate;
 		},
 		currentSessionFilePath?: string,
 	) {
 		super();
+		this.work = options?.work ?? new SafeStopGate();
 		this.keybindings = options?.keybindings ?? KeybindingsManager.create();
 		this.currentSessionsLoader = currentSessionsLoader;
 		this.allSessionsLoader = allSessionsLoader;
@@ -840,33 +845,42 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		// Handle session deletion
 		this.sessionList.onDeleteSession = async (sessionPath: string) => {
-			const result = await deleteSessionFile(sessionPath);
+			return this.work.run(async () => {
+				if (this.disposed) return;
+				const result = await deleteSessionFile(sessionPath);
 
-			if (result.ok) {
-				if (this.currentSessions) {
-					this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
+				if (result.ok) {
+					if (this.currentSessions) {
+						this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
+					}
+					if (this.allSessions) {
+						this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
+					}
+
+					const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
+					const showCwd = this.scope === "all";
+					this.sessionList.setSessions(sessions, showCwd);
+
+					const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
+					this.header.setStatusMessage({ type: "info", message: msg }, 2000);
+					await this.refreshSessionsAfterMutation();
+				} else {
+					const errorMessage = result.error ?? "Unknown error";
+					this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);
 				}
-				if (this.allSessions) {
-					this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
-				}
 
-				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
-				const showCwd = this.scope === "all";
-				this.sessionList.setSessions(sessions, showCwd);
-
-				const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
-				this.header.setStatusMessage({ type: "info", message: msg }, 2000);
-				await this.refreshSessionsAfterMutation();
-			} else {
-				const errorMessage = result.error ?? "Unknown error";
-				this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);
-			}
-
-			this.requestRender();
+				this.requestRender();
+			});
 		};
 
 		// Start loading current sessions immediately
 		void this.loadScope("current");
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		this.cancelLoads();
+		this.header.setStatusMessage(null);
 	}
 
 	private cancelLoads(): void {
@@ -915,95 +929,101 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	}
 
 	private async confirmRename(value: string): Promise<void> {
-		const next = value.trim();
-		if (!next) return;
-		const target = this.renameTargetPath;
-		if (!target) {
-			this.exitRenameMode();
-			return;
-		}
+		return this.work.run(async () => {
+			if (this.disposed) return;
+			const next = value.trim();
+			if (!next) return;
+			const target = this.renameTargetPath;
+			if (!target) {
+				this.exitRenameMode();
+				return;
+			}
 
-		// Find current name for callback
-		const renameSession = this.renameSession;
-		if (!renameSession) {
-			this.exitRenameMode();
-			return;
-		}
+			// Find current name for callback
+			const renameSession = this.renameSession;
+			if (!renameSession) {
+				this.exitRenameMode();
+				return;
+			}
 
-		try {
-			await renameSession(target, next);
-			await this.refreshSessionsAfterMutation();
-		} finally {
-			this.exitRenameMode();
-		}
+			try {
+				await renameSession(target, next);
+				await this.refreshSessionsAfterMutation();
+			} finally {
+				this.exitRenameMode();
+			}
+		});
 	}
 
 	private async loadScope(scope: SessionScope): Promise<void> {
-		if (scope === "current" ? this.currentLoad : this.allLoad) return;
+		return this.work.run(async () => {
+			if (this.disposed) return;
+			if (scope === "current" ? this.currentLoad : this.allLoad) return;
 
-		const showCwd = scope === "all";
-		const controller = new AbortController();
-		if (scope === "current") {
-			this.currentLoad = controller;
-		} else {
-			this.allLoad = controller;
-		}
-		this.header.setScope(scope);
-		this.header.setLoading(true);
-		this.requestRender();
+			const showCwd = scope === "all";
+			const controller = new AbortController();
+			if (scope === "current") {
+				this.currentLoad = controller;
+			} else {
+				this.allLoad = controller;
+			}
+			this.header.setScope(scope);
+			this.header.setLoading(true);
+			this.requestRender();
 
-		const isActive = () => (scope === "current" ? this.currentLoad : this.allLoad) === controller;
-		const onProgress: SessionListProgress = (loaded, total, partialSessions) => {
-			if (!isActive()) return;
-			if (partialSessions) {
-				const sessions = [...partialSessions];
+			const isActive = () => (scope === "current" ? this.currentLoad : this.allLoad) === controller;
+			const onProgress: SessionListProgress = (loaded, total, partialSessions) => {
+				if (!isActive()) return;
+				if (partialSessions) {
+					const sessions = [...partialSessions];
+					if (scope === "current") {
+						this.currentSessions = sessions;
+					} else {
+						this.allSessions = sessions;
+					}
+					if (scope === this.scope) this.sessionList.setSessions(sessions, showCwd);
+				}
+				if (scope !== this.scope) return;
+				this.header.setProgress(loaded, total);
+				this.requestRender();
+			};
+
+			try {
+				const sessions = await (scope === "current"
+					? this.currentSessionsLoader(onProgress, controller.signal)
+					: this.allSessionsLoader(onProgress, controller.signal));
+				if (!isActive()) return;
+
 				if (scope === "current") {
 					this.currentSessions = sessions;
+					this.currentLoad = null;
 				} else {
 					this.allSessions = sessions;
+					this.allLoad = null;
 				}
-				if (scope === this.scope) this.sessionList.setSessions(sessions, showCwd);
+
+				if (scope !== this.scope) return;
+				this.header.setLoading(false);
+				this.sessionList.setSessions(sessions, showCwd);
+				this.requestRender();
+			} catch (err) {
+				if (!isActive()) return;
+				if (scope === "current") {
+					this.currentLoad = null;
+					this.currentSessions = null;
+				} else {
+					this.allLoad = null;
+					this.allSessions = null;
+				}
+				if (scope !== this.scope) return;
+
+				const message = err instanceof Error ? err.message : String(err);
+				this.header.setLoading(false);
+				this.header.setStatusMessage({ type: "error", message: `Failed to load sessions: ${message}` }, 4000);
+				this.sessionList.setSessions([], showCwd);
+				this.requestRender();
 			}
-			if (scope !== this.scope) return;
-			this.header.setProgress(loaded, total);
-			this.requestRender();
-		};
-
-		try {
-			const sessions = await (scope === "current"
-				? this.currentSessionsLoader(onProgress, controller.signal)
-				: this.allSessionsLoader(onProgress, controller.signal));
-			if (!isActive()) return;
-
-			if (scope === "current") {
-				this.currentSessions = sessions;
-				this.currentLoad = null;
-			} else {
-				this.allSessions = sessions;
-				this.allLoad = null;
-			}
-
-			if (scope !== this.scope) return;
-			this.header.setLoading(false);
-			this.sessionList.setSessions(sessions, showCwd);
-			this.requestRender();
-		} catch (err) {
-			if (!isActive()) return;
-			if (scope === "current") {
-				this.currentLoad = null;
-				this.currentSessions = null;
-			} else {
-				this.allLoad = null;
-				this.allSessions = null;
-			}
-			if (scope !== this.scope) return;
-
-			const message = err instanceof Error ? err.message : String(err);
-			this.header.setLoading(false);
-			this.header.setStatusMessage({ type: "error", message: `Failed to load sessions: ${message}` }, 4000);
-			this.sessionList.setSessions([], showCwd);
-			this.requestRender();
-		}
+		});
 	}
 
 	private toggleSortMode(): void {

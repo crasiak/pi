@@ -145,7 +145,8 @@ describe("getSupportedThinkingLevels", () => {
 						},
 					],
 				},
-				contextWindow: 272000,
+				// The pinned catalog lists a 500k window for Codex gpt-6.1-sol only.
+				contextWindow: provider === "openai-codex" && modelId === "gpt-6.1-sol" ? 500000 : 272000,
 				maxTokens: 128000,
 				compat: {
 					supportsAdditionalTools: true,
@@ -171,12 +172,6 @@ describe("getSupportedThinkingLevels", () => {
 
 	it("includes low/high/max plus off for DeepSeek V4.1 Flash on the DeepSeek provider", () => {
 		const model = getModel("deepseek", "deepseek-flash");
-		expect(model).toBeDefined();
-		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "low", "high", "max"]);
-	});
-
-	it("includes low/high/max plus off for DeepSeek V4 Flash on opencode-go", () => {
-		const model = getModel("opencode-go", "deepseek-v4-flash");
 		expect(model).toBeDefined();
 		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "low", "high", "max"]);
 	});

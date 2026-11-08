@@ -266,6 +266,8 @@ Release resources in `session_shutdown` even when normal operation attempted cle
 Keep cleanup idempotent because cancellation, reload, session replacement, and process exit can converge on the same path.
 Use `ctx.shutdown()` to request an orderly process shutdown.
 
+Conditional safe refresh is a separate contract. Extensions are unsupported by default; audited participants can use `pi.registerSafeStop({ version: 1 })` and synchronously acquire work leases until owned work and cleanup finish. A declaration is not a sandbox or automatic certification. See [Conditional graceful stop](safe-refresh.md) for obligations, current built-in qualification, and the local socket protocol.
+
 <a id="examples-reference"></a>
 <a id="use-examples-as-the-implementation-reference"></a>
 

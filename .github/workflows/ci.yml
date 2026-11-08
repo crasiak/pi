@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, release/pi-1.2.0]
   pull_request:
-    branches: [main]
+    branches: [main, release/pi-1.2.0]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -32,8 +32,14 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # This frozen release branch builds against the immutable pinned model catalog (as the Nix
+      # build does) instead of regenerating from live models.dev data, which can add model shapes
+      # the released provider types do not accept. The script verifies the revision's sha256.
+      - name: Hydrate pinned model catalog
+        run: node scripts/update-model-catalog-pin.mjs --hydrate
+
       - name: Build
-        run: npm run build
+        run: npm run build:offline
 
       - name: Check
         run: npm run check
